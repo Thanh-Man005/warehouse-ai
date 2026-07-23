@@ -142,7 +142,7 @@ def ask_ai(question: str, system: str, history: list) -> str:
         contents.append({"role": "user", "parts": [{"text": f"{system}\n\n{question}"}]})
         body = {"contents": contents, "generationConfig": {"maxOutputTokens": 1500}}
         gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-       	resp = requests.post(gemini_url, params={"key": api_key}, json=body)
+        resp = requests.post(gemini_url, params={"key": api_key}, json=body)
         if resp.status_code != 200:
             raise Exception(f"Gemini lỗi {resp.status_code}: {resp.text[:300]}")
         return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -387,57 +387,62 @@ with tab_chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Input câu hỏi
-    question = st.chat_input("Nhập câu hỏi về kho hàng... (VD: hàng nào sắp hết? NCC nào rẻ nhất?)")
-
-    # Xử lý quick question
+    # Xử lý quick question để gán tự động vào ô chữ
+    default_q = ""
     if "quick_question" in st.session_state:
-        question = st.session_state.pop("quick_question")
+        default_q = st.session_state.pop("quick_question")
 
-    if question:
-        # Hiển thị câu hỏi user
-        with st.chat_message("user"):
-            st.markdown(question)
-        st.session_state.messages.append({"role": "user", "content": question})
+    # Input câu hỏi (Thay chat_input bằng text_area để độc lập với nút bấm)
+    question = st.text_area("Nhập câu hỏi về kho hàng... (VD: hàng nào sắp hết? NCC nào rẻ nhất?)", value=default_q, height=100)
 
-        # Xử lý mã hóa
-        with st.spinner("🔄 Đang xử lý..."):
-            if security_on:
-                df_for_ai, vault = tokenize_dataframe(df_raw, sensitive_fields)
-                st.session_state.vault = vault
-                token_count = len(vault)
-            else:
-                df_for_ai = df_raw
-                vault = {}
-                token_count = 0
+    # 🚀 TÁCH AI RA BẰNG NÚT BẤM
+    if st.button("🚀 Gửi câu hỏi cho AI", type="primary"):
+        if question:
+            # Hiển thị câu hỏi user
+            with st.chat_message("user"):
+                st.markdown(question)
+            st.session_state.messages.append({"role": "user", "content": question})
 
-            # Build system prompt với dữ liệu đã xử lý
-            system = build_system_prompt(df_for_ai, selected_sheet)
-
-            # Lịch sử chat (không bao gồm tin nhắn vừa thêm)
-            history = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages[:-1]
-            ]
-
-            try:
-                ai_response = ask_ai(question, system, history)
-
-                # Giải mã token trong phản hồi
-                if security_on and vault:
-                    final_response = detokenize(ai_response, vault)
+            # Xử lý mã hóa và gọi AI
+            with st.spinner("🔄 AI đang suy nghĩ..."):
+                if security_on:
+                    df_for_ai, vault = tokenize_dataframe(df_raw, sensitive_fields)
+                    st.session_state.vault = vault
+                    token_count = len(vault)
                 else:
-                    final_response = ai_response
+                    df_for_ai = df_raw
+                    vault = {}
+                    token_count = 0
 
-                with st.chat_message("assistant"):
-                    st.markdown(final_response)
-                    if security_on and token_count > 0:
-                        st.caption(f"🔒 {token_count} giá trị nhạy cảm đã được mã hóa trước khi gửi AI và giải mã trong kết quả này.")
+                # Build system prompt với dữ liệu đã xử lý
+                system = build_system_prompt(df_for_ai, selected_sheet)
 
-                st.session_state.messages.append({"role": "assistant", "content": final_response})
+                # Lịch sử chat (không bao gồm tin nhắn vừa thêm)
+                history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages[:-1]
+                ]
 
-            except Exception as e:
-                st.error(f"❌ Lỗi kết nối API: {str(e)}")
+                try:
+                    ai_response = ask_ai(question, system, history)
+
+                    # Giải mã token trong phản hồi
+                    if security_on and vault:
+                        final_response = detokenize(ai_response, vault)
+                    else:
+                        final_response = ai_response
+
+                    with st.chat_message("assistant"):
+                        st.markdown(final_response)
+                        if security_on and token_count > 0:
+                            st.caption(f"🔒 {token_count} giá trị nhạy cảm đã được mã hóa trước khi gửi AI và giải mã trong kết quả này.")
+
+                    st.session_state.messages.append({"role": "assistant", "content": final_response})
+
+                except Exception as e:
+                    st.error(f"❌ Lỗi kết nối API: {str(e)}")
+        else:
+            st.warning("⚠️ Bạn chưa nhập nội dung, vui lòng gõ câu hỏi trước khi bấm gửi!")
 
 # ── Tab 3: Chi tiết bảo mật ──────────────────────────────────────────────
 with tab_security:
@@ -449,7 +454,7 @@ with tab_security:
     1. 📥 **Đọc dữ liệu** — App đọc file Excel từ máy của bạn
     2. 🔍 **Phát hiện field nhạy cảm** — Scan các cột như `ton_kho`, `nha_cung_cap`, `gia_nhap`...
     3. 🔐 **Token hóa** — Thay giá trị thật bằng token `[TON_001]`, giá trị thật lưu mã hóa AES-256
-    4. 📤 **Gửi lên AI** — Claude chỉ nhận dữ liệu đã token hóa, không bao giờ thấy số thật
+    4. 📤 **Gửi lên AI** — AI chỉ nhận dữ liệu đã token hóa, không bao giờ thấy số thật
     5. 📥 **Nhận phản hồi** — AI trả về câu trả lời với token
     6. 🔓 **Giải mã** — App thay token bằng giá trị thật trước khi hiển thị cho bạn
     """)
