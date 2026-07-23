@@ -81,7 +81,6 @@ def tokenize_dataframe(df: pd.DataFrame, sensitive_fields: list):
         prefix = re.sub(r'[^A-Za-z]', '', col)[:3].upper() or "FLD"
         counter[0] += 1
         tok = f"[{prefix}_{counter[0]:03d}]"
-        # Lưu giá trị thật được mã hóa AES
         vault[tok] = fernet.encrypt(str(val).encode()).decode()
         return tok
 
@@ -100,23 +99,41 @@ def detokenize(text: str, vault: dict) -> str:
     return text
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 3 — Đọc dữ liệu Excel
+# PHẦN 3 — Đọc dữ liệu từ Google Trang tính / Excel
 # ════════════════════════════════════════════════════════════════════════════
+def convert_gsheet_url(url: str) -> str:
+    """Chuyển link Google Sheet thông thường sang link xuất CSV."""
+    try:
+        match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
+        if match:
+            sheet_id = match.group(1)
+            # Kiểm tra xem link có chứa gid (sheet cụ thể) không
+            gid_match = re.search(r'gid=([0-9]+)', url)
+            gid_param = f"&gid={gid_match.group(1)}" if gid_match else ""
+            return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_param}"
+    except Exception:
+        pass
+    return url
+
+@st.cache_data(show_spinner=False, ttl=60) # Tự động làm mới dữ liệu sau 60s
+def load_data_from_url(url: str) -> pd.DataFrame:
+    csv_url = convert_gsheet_url(url)
+    return pd.read_csv(csv_url)
+
 @st.cache_data(show_spinner=False)
 def load_excel(path: str) -> dict[str, pd.DataFrame]:
-    """Đọc tất cả sheet trong file Excel."""
     xl = pd.ExcelFile(path)
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 4 — Xử lý câu hỏi tự nhiên với Claude
+# PHẦN 4 — Xử lý câu hỏi tự nhiên với AI
 # ════════════════════════════════════════════════════════════════════════════
 def build_system_prompt(df_masked: pd.DataFrame, sheet_name: str) -> str:
     sample = df_masked.head(8).to_string(index=False)
     cols   = list(df_masked.columns)
     return f"""Bạn là trợ lý phân tích kho hàng thông minh cho quản lý.
 
-DỮ LIỆU KHO (sheet: {sheet_name}):
+DỮ LIỆU KHO (Nguồn: {sheet_name}):
 Các cột: {cols}
 Mẫu dữ liệu:
 {sample}
@@ -134,7 +151,6 @@ def ask_ai(question: str, system: str, history: list) -> str:
     api_key  = st.session_state.get("api_key", "")
 
     if provider == "Gemini":
-        # Hỗ trợ cả 2 loại key: AIzaSy... và AQ.... (OAuth2)
         contents = []
         for m in history:
             contents.append({"role": "user" if m["role"] == "user" else "model",
@@ -148,7 +164,6 @@ def ask_ai(question: str, system: str, history: list) -> str:
         return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
     elif provider == "Claude (Anthropic)":
-        # Anthropic Claude API
         url = "https://api.anthropic.com/v1/messages"
         headers = {
             "x-api-key": api_key,
@@ -167,7 +182,6 @@ def ask_ai(question: str, system: str, history: list) -> str:
         return resp.json()["content"][0]["text"]
 
     elif provider == "OpenAI (ChatGPT)":
-        # OpenAI API
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -201,7 +215,6 @@ with st.sidebar:
     )
     st.session_state.ai_provider = provider
 
-    # Hướng dẫn lấy API key theo provider
     help_links = {
         "Gemini":             "Lấy miễn phí tại aistudio.google.com",
         "Claude (Anthropic)": "Lấy tại console.anthropic.com (trả phí)",
@@ -218,28 +231,56 @@ with st.sidebar:
 
     st.divider()
 
-    # Upload / cập nhật file Excel
-    st.markdown("### 📂 File dữ liệu kho")
-    if EXCEL_PATH.exists():
-        st.success(f"✅ Đang dùng: `warehouse.xlsx`")
-        mtime = os.path.getmtime(EXCEL_PATH)
-        import datetime
-        st.caption(f"Cập nhật lần cuối: {datetime.datetime.fromtimestamp(mtime).strftime('%d/%m/%Y %H:%M')}")
-
-    uploaded = st.file_uploader(
-        "Tải lên file Excel mới" if EXCEL_PATH.exists() else "Tải lên file Excel",
-        type=["xlsx", "xls"],
-        help="File mới sẽ thay thế file hiện tại"
+    # Chọn nguồn dữ liệu: Google Sheet hoặc Upload File
+    st.markdown("### 📂 Nguồn dữ liệu kho")
+    data_source = st.radio(
+        "Chọn hình thức cung cấp dữ liệu:",
+        ["🌐 Link Google Trang tính", "📁 Tải file Excel/CSV lên"],
+        index=0
     )
-    if uploaded:
-        EXCEL_PATH.write_bytes(uploaded.read())
-        st.cache_data.clear()
-        st.success("✅ Đã cập nhật file!")
-        st.rerun()
 
-    # Tạo file mẫu nếu chưa có
-    if not EXCEL_PATH.exists():
-        if st.button("📥 Tạo file mẫu", use_container_width=True):
+    df_raw = None
+    selected_sheet_name = "Google Sheet"
+
+    if data_source == "🌐 Link Google Trang tính":
+        gsheet_url = st.text_input(
+            "Dán link Google Sheet vào đây:",
+            value=st.session_state.get("gsheet_url", ""),
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            help="Hãy nhớ bật quyền 'Bất kỳ ai có đường link đều có thể xem'"
+        )
+        if gsheet_url:
+            st.session_state.gsheet_url = gsheet_url
+            try:
+                df_raw = load_data_from_url(gsheet_url)
+                st.success("✅ Kết nối Google Trang tính thành công!")
+            except Exception as e:
+                st.error("❌ Không thể đọc Google Sheet. Vui lòng kiểm tra lại link hoặc quyền truy cập Chia sẻ!")
+    else:
+        uploaded = st.file_uploader(
+            "Tải lên file Excel (.xlsx) hoặc CSV",
+            type=["xlsx", "xls", "csv"]
+        )
+        if uploaded:
+            if uploaded.name.endswith(".csv"):
+                df_raw = pd.read_csv(uploaded)
+            else:
+                EXCEL_PATH.write_bytes(uploaded.read())
+                st.cache_data.clear()
+                all_sheets = load_excel(str(EXCEL_PATH))
+                tab_names = list(all_sheets.keys())
+                selected_sheet_name = st.selectbox("📋 Chọn sheet:", tab_names)
+                df_raw = all_sheets[selected_sheet_name]
+
+        elif EXCEL_PATH.exists():
+            all_sheets = load_excel(str(EXCEL_PATH))
+            tab_names = list(all_sheets.keys())
+            selected_sheet_name = st.selectbox("📋 Chọn sheet:", tab_names)
+            df_raw = all_sheets[selected_sheet_name]
+
+    # Tạo file mẫu nếu chưa có dữ liệu nào
+    if df_raw is None and not EXCEL_PATH.exists():
+        if st.button("📥 Tạo file mẫu tạm thời", use_container_width=True):
             sample_df = pd.DataFrame({
                 "ma_hang":       ["SP001","SP002","SP003","SP004","SP005"],
                 "ten_hang":      ["Bút bi xanh TL","Vở ô ly 96tr","Mực in HP 680","Giấy A4 IK","Bấm kim Kokuyo"],
@@ -253,7 +294,6 @@ with st.sidebar:
             with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl") as w:
                 sample_df.to_excel(w, sheet_name="Ton_kho", index=False)
             st.cache_data.clear()
-            st.success("✅ Đã tạo file mẫu!")
             st.rerun()
 
     st.divider()
@@ -277,7 +317,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Xóa lịch sử chat
     if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.vault    = {}
@@ -290,26 +329,14 @@ st.markdown("# 🏭 AI Quản lý Kho Hàng")
 st.caption("Hỏi đáp tự nhiên • Dữ liệu nhạy cảm được mã hóa trước khi gửi AI")
 
 # Kiểm tra điều kiện
-if not EXCEL_PATH.exists():
-    st.info("👈 Chưa có file dữ liệu. Vui lòng tải lên hoặc tạo file mẫu từ sidebar.")
+if df_raw is None:
+    st.info("👈 Dữ liệu kho đang trống. Vui lòng dán **Link Google Trang tính** hoặc tải file Excel ở cột Cài đặt bên trái.")
     st.stop()
 
 if not st.session_state.get("api_key"):
     provider = st.session_state.get("ai_provider", "Gemini")
     st.warning(f"👈 Vui lòng nhập API Key ({provider}) ở sidebar để bắt đầu.")
     st.stop()
-
-# Đọc dữ liệu
-all_sheets = load_excel(str(EXCEL_PATH))
-
-# Chọn sheet (nếu có nhiều sheet)
-tab_names = list(all_sheets.keys())
-if len(tab_names) > 1:
-    selected_sheet = st.selectbox("📋 Chọn sheet dữ liệu:", tab_names)
-else:
-    selected_sheet = tab_names[0]
-
-df_raw = all_sheets[selected_sheet]
 
 # ── Thống kê nhanh ────────────────────────────────────────────────────────
 col1, col2, col3, col4 = st.columns(4)
@@ -343,7 +370,6 @@ with tab_data:
     )
 
     if view_mode == "Dữ liệu gốc":
-        # Highlight các cột nhạy cảm
         def highlight_sensitive(col):
             if is_sensitive(col.name, sensitive_fields):
                 return ["background-color: #FEF3C7"] * len(col)
@@ -361,13 +387,11 @@ with tab_data:
 
 # ── Tab 2: Chat với AI ───────────────────────────────────────────────────
 with tab_chat:
-    # Khởi tạo session state
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "vault" not in st.session_state:
         st.session_state.vault = {}
 
-    # Gợi ý câu hỏi nhanh
     st.markdown("**💡 Gợi ý câu hỏi nhanh:**")
     quick_cols = st.columns(3)
     quick_questions = [
@@ -382,28 +406,22 @@ with tab_chat:
 
     st.divider()
 
-    # Hiển thị lịch sử chat
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Xử lý quick question để gán tự động vào ô chữ
     default_q = ""
     if "quick_question" in st.session_state:
         default_q = st.session_state.pop("quick_question")
 
-    # Input câu hỏi (Thay chat_input bằng text_area để độc lập với nút bấm)
     question = st.text_area("Nhập câu hỏi về kho hàng... (VD: hàng nào sắp hết? NCC nào rẻ nhất?)", value=default_q, height=100)
 
-    # 🚀 TÁCH AI RA BẰNG NÚT BẤM
     if st.button("🚀 Gửi câu hỏi cho AI", type="primary"):
         if question:
-            # Hiển thị câu hỏi user
             with st.chat_message("user"):
                 st.markdown(question)
             st.session_state.messages.append({"role": "user", "content": question})
 
-            # Xử lý mã hóa và gọi AI
             with st.spinner("🔄 AI đang suy nghĩ..."):
                 if security_on:
                     df_for_ai, vault = tokenize_dataframe(df_raw, sensitive_fields)
@@ -414,10 +432,8 @@ with tab_chat:
                     vault = {}
                     token_count = 0
 
-                # Build system prompt với dữ liệu đã xử lý
-                system = build_system_prompt(df_for_ai, selected_sheet)
+                system = build_system_prompt(df_for_ai, selected_sheet_name)
 
-                # Lịch sử chat (không bao gồm tin nhắn vừa thêm)
                 history = [
                     {"role": m["role"], "content": m["content"]}
                     for m in st.session_state.messages[:-1]
@@ -426,7 +442,6 @@ with tab_chat:
                 try:
                     ai_response = ask_ai(question, system, history)
 
-                    # Giải mã token trong phản hồi
                     if security_on and vault:
                         final_response = detokenize(ai_response, vault)
                     else:
@@ -451,7 +466,7 @@ with tab_security:
     st.markdown("""
     **Luồng xử lý khi bạn đặt câu hỏi:**
 
-    1. 📥 **Đọc dữ liệu** — App đọc file Excel từ máy của bạn
+    1. 📥 **Đọc dữ liệu** — Trích xuất trực tiếp từ Google Sheet / Excel
     2. 🔍 **Phát hiện field nhạy cảm** — Scan các cột như `ton_kho`, `nha_cung_cap`, `gia_nhap`...
     3. 🔐 **Token hóa** — Thay giá trị thật bằng token `[TON_001]`, giá trị thật lưu mã hóa AES-256
     4. 📤 **Gửi lên AI** — AI chỉ nhận dữ liệu đã token hóa, không bao giờ thấy số thật
