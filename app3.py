@@ -71,7 +71,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     q_low = question.lower().strip()
 
     # Bắt buộc chuyển cho AI nếu hỏi nâng cao / danh sách / bảng
-    if any(k in q_low for k in ["bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng"]):
+    if any(k in q_low for k in ["bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất"]):
         return None, True 
 
     # 1. TRA CỨU HÀNG TỒN ÍT / SẮP HẾT (Xử lý nội bộ 0 Token)
@@ -111,7 +111,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI (CHUẨN TÊN MODEL CHÍNH THỨC)
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -151,10 +151,10 @@ def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
 
 QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
 1. Bạn phải trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối, tuyệt đối KHÔNG ĐƯỢC ngắt câu giữa chừng.
-2. Nếu người dùng hỏi danh sách / thống kê / mặt hàng, BẮT BUỘC trình bày dưới dạng BẢNG MARKDOWN chuẩn dạng:
-| STT | Mã VT | Tên Vật Tư | ĐVT | Tồn Đầu | Nhập | Xuất | Tồn Cuối | Ghi Chú |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-3. Hãy liệt kê chi tiết các mặt hàng thỏa mãn điều kiện câu hỏi."""
+2. Trình bày thông tin rõ ràng dưới dạng BẢNG MARKDOWN chuẩn (nếu có danh sách mặt hàng, số lượng):
+| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |
+| --- | --- | --- | --- | --- |
+3. Trả lời trực tiếp vào trọng tâm câu hỏi của người dùng."""
 
     body = {
         "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nCÂU HỎI CỦA NGUỜI DÙNG: {question}"}]}],
@@ -164,10 +164,11 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         }
     }
 
+    # Tên các Model chính thức chuẩn 100% từ Google
     models_to_try = [
         "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash-latest"
+        "gemini-1.5-flash",
+        "gemini-2.0-flash"
     ]
 
     last_error = ""
@@ -183,13 +184,13 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
                     text_parts = [p.get("text", "") for p in parts if "text" in p]
                     full_text = "".join(text_parts).strip()
                     if full_text:
-                        return full_text
+                        return f"🤖 **[Phân tích bởi AI]**\n\n{full_text}"
             else:
                 last_error = resp.text
         except Exception as e:
             last_error = str(e)
 
-    raise Exception(f"Lỗi AI ({last_error[:200]})")
+    raise Exception(f"Lỗi kết nối AI: {last_error[:200]}")
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ LƯU TRỮ CẤU HÌNH
@@ -261,23 +262,21 @@ with tab_data:
     st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
 
 with tab_chat:
-    # Hạn chế cuộn tự động bị lỗi bằng cách hiển thị lại toàn bộ lịch sử đã lưu
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): 
             st.markdown(msg["content"])
 
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Liệt kê các mặt hàng tồn kho lâu nhất trong kho")
+    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Các mặt hàng xuất nhiều nhất đạt được trong 1 tháng")
 
     if st.button("🚀 Gửi câu hỏi", type="primary"):
         if question:
             with st.chat_message("user"): 
                 st.markdown(question)
             
-            # Thêm tin nhắn của User & Tự động lưu file JSON
             st.session_state.messages.append({"role": "user", "content": question})
             save_json_data(CHAT_PATH, st.session_state.messages)
 
-            with st.spinner("🔄 AI đang phân tích dữ liệu và lập bảng đầy đủ..."):
+            with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
                 local_answer, need_ai = auto_route_and_process(question, sheets_data)
 
                 if not need_ai:
@@ -291,6 +290,5 @@ with tab_chat:
                 with st.chat_message("assistant"):
                     st.markdown(final_ans)
                 
-                # Thêm tin nhắn của Assistant & Tự động lưu file JSON
                 st.session_state.messages.append({"role": "assistant", "content": final_ans})
                 save_json_data(CHAT_PATH, st.session_state.messages)
