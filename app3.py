@@ -25,9 +25,44 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Đường dẫn lưu trữ dữ liệu bền vững ─────────────────────────────────────────
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-EXCEL_PATH = DATA_DIR / "warehouse.xlsx"
+EXCEL_PATH  = DATA_DIR / "warehouse.xlsx"
+CONFIG_PATH = DATA_DIR / "config.json"
+CHAT_PATH   = DATA_DIR / "chat_history.json"
+
+# ════════════════════════════════════════════════════════════════════════════
+# PHẦN 0 — HÀM LƯU / TẢI CẤU HÌNH VÀ LỊCH SỬ CHAT (PERSISTENCE)
+# ════════════════════════════════════════════════════════════════════════════
+def load_json_data(path: Path, default_val):
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default_val
+    return default_val
+
+def save_json_data(path: Path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# Khởi tạo trạng thái ban đầu từ file đã lưu
+saved_config = load_json_data(CONFIG_PATH, {
+    "api_key": "",
+    "data_source": "🌐 Link Google Trang tính",
+    "gsheet_url": ""
+})
+
+if "api_key" not in st.session_state:
+    st.session_state.api_key = saved_config.get("api_key", "")
+if "gsheet_url" not in st.session_state:
+    st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
+if "data_source" not in st.session_state:
+    st.session_state.data_source = saved_config.get("data_source", "🌐 Link Google Trang tính")
+if "messages" not in st.session_state:
+    st.session_state.messages = load_json_data(CHAT_PATH, [])
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — BỘ NHẬN DIỆN Ý ĐỊNH & ĐỊNH TUYẾN TỰ ĐỘNG (AUTO-ROUTER)
@@ -35,7 +70,7 @@ EXCEL_PATH = DATA_DIR / "warehouse.xlsx"
 def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     q_low = question.lower().strip()
 
-    # Chuyển AI xử lý các câu hỏi phức tạp / phân tích / lập bảng
+    # Bắt buộc chuyển cho AI nếu hỏi nâng cao / danh sách / bảng
     if any(k in q_low for k in ["bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng"]):
         return None, True 
 
@@ -76,7 +111,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI (ĐÃ SỬA LỖI 404 VÀ ĐỨT CÂU)
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -129,7 +164,6 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         }
     }
 
-    # Danh sách các Model chính thức để thử kết nối (Tránh lỗi 404)
     models_to_try = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
@@ -146,7 +180,6 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
                 candidates = res_json.get("candidates", [])
                 if candidates and "content" in candidates[0]:
                     parts = candidates[0]["content"].get("parts", [])
-                    # Ghép toàn bộ các đoạn văn bản lại để đảm bảo không bị thiếu chữ
                     text_parts = [p.get("text", "") for p in parts if "text" in p]
                     full_text = "".join(text_parts).strip()
                     if full_text:
@@ -159,34 +192,61 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
     raise Exception(f"Lỗi AI ({last_error[:200]})")
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
+# PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ LƯU TRỮ CẤU HÌNH
 # ════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## ⚙️ Cài đặt")
-    api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.get("api_key", ""))
-    if api_key_input: st.session_state.api_key = api_key_input
+    
+    # 1. Tự động lưu API Key khi thay đổi
+    api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
+    if api_key_input != st.session_state.api_key:
+        st.session_state.api_key = api_key_input
+        saved_config["api_key"] = api_key_input
+        save_json_data(CONFIG_PATH, saved_config)
 
     st.divider()
     st.markdown("### 📂 Nguồn dữ liệu kho")
-    data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"])
+    
+    # 2. Tự động lưu Nguồn dữ liệu (Google Sheet hoặc Excel)
+    data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
+    data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
+    if data_source != st.session_state.data_source:
+        st.session_state.data_source = data_source
+        saved_config["data_source"] = data_source
+        save_json_data(CONFIG_PATH, saved_config)
 
     sheets_data = None
     if data_source == "🌐 Link Google Trang tính":
-        gsheet_url = st.text_input("Dán link Google Sheet:", value=st.session_state.get("gsheet_url", ""))
-        if gsheet_url:
-            st.session_state.gsheet_url = gsheet_url
+        # 3. Tự động lưu Link Google Sheet
+        gsheet_url_input = st.text_input("Dán link Google Sheet:", value=st.session_state.gsheet_url)
+        if gsheet_url_input != st.session_state.gsheet_url:
+            st.session_state.gsheet_url = gsheet_url_input
+            saved_config["gsheet_url"] = gsheet_url_input
+            save_json_data(CONFIG_PATH, saved_config)
+
+        if st.session_state.gsheet_url:
             try:
-                sheets_data = load_all_sheets_from_gsheet(gsheet_url)
+                sheets_data = load_all_sheets_from_gsheet(st.session_state.gsheet_url)
                 st.success(f"✅ Kết nối thành công {len(sheets_data)} tab!")
-            except Exception: st.error("❌ Lỗi đọc Google Sheet!")
+            except Exception:
+                st.error("❌ Lỗi đọc Google Sheet!")
     else:
         uploaded = st.file_uploader("Tải file Excel", type=["xlsx", "xls"])
         if uploaded:
             EXCEL_PATH.write_bytes(uploaded.read())
             st.cache_data.clear()
             sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            st.success("✅ Đã lưu file Excel mới!")
         elif EXCEL_PATH.exists():
             sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
+
+    st.divider()
+    # Nút xóa lịch sử chat khi cần làm mới hoàn toàn
+    if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
+        st.session_state.messages = []
+        save_json_data(CHAT_PATH, [])
+        st.rerun()
 
 st.markdown("# 🏭 AI Quản Lý Kho Hàng")
 
@@ -201,17 +261,21 @@ with tab_data:
     st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
 
 with tab_chat:
-    if "messages" not in st.session_state: st.session_state.messages = []
-
+    # Hạn chế cuộn tự động bị lỗi bằng cách hiển thị lại toàn bộ lịch sử đã lưu
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]): st.markdown(msg["content"])
+        with st.chat_message(msg["role"]): 
+            st.markdown(msg["content"])
 
     question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Liệt kê các mặt hàng tồn kho lâu nhất trong kho")
 
     if st.button("🚀 Gửi câu hỏi", type="primary"):
         if question:
-            with st.chat_message("user"): st.markdown(question)
+            with st.chat_message("user"): 
+                st.markdown(question)
+            
+            # Thêm tin nhắn của User & Tự động lưu file JSON
             st.session_state.messages.append({"role": "user", "content": question})
+            save_json_data(CHAT_PATH, st.session_state.messages)
 
             with st.spinner("🔄 AI đang phân tích dữ liệu và lập bảng đầy đủ..."):
                 local_answer, need_ai = auto_route_and_process(question, sheets_data)
@@ -226,4 +290,7 @@ with tab_chat:
 
                 with st.chat_message("assistant"):
                     st.markdown(final_ans)
+                
+                # Thêm tin nhắn của Assistant & Tự động lưu file JSON
                 st.session_state.messages.append({"role": "assistant", "content": final_ans})
+                save_json_data(CHAT_PATH, st.session_state.messages)
