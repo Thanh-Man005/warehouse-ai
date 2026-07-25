@@ -35,7 +35,7 @@ EXCEL_PATH = DATA_DIR / "warehouse.xlsx"
 def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     q_low = question.lower().strip()
 
-    # Bắt buộc chuyển cho AI nếu hỏi nâng cao / danh sách / bảng
+    # Chuyển AI xử lý các câu hỏi phức tạp / phân tích / lập bảng
     if any(k in q_low for k in ["bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng"]):
         return None, True 
 
@@ -76,7 +76,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI (KHÔNG BỊ CỤT CÂU)
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI (ĐÃ SỬA LỖI 404 VÀ ĐỨT CÂU)
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -98,7 +98,7 @@ def load_all_sheets_from_file(path: str) -> dict[str, pd.DataFrame]:
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
 def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
-    api_key = st.session_state.get("api_key", "")
+    api_key = st.session_state.get("api_key", "").strip()
     if not api_key:
         raise Exception("Vui lòng nhập API Key ở menu Cài đặt bên trái.")
     
@@ -106,41 +106,57 @@ def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
     for name, df in sheets_dict.items():
         df_clean = df.dropna(how="all")
         if not df_clean.empty:
-            prompt_data.append(f"=== TAB [{name}] ===\n{df_clean.head(30).to_string(index=False)}")
+            prompt_data.append(f"=== TAB [{name}] ===\n{df_clean.head(40).to_string(index=False)}")
             
     context = "\n\n".join(prompt_data)
     
-    system = f"""Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu các tab trong kho:
+    system = f"""Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu từ file kho:
 
 {context}
 
-QUY TẮC TRẢ LỜI NGHIÊM NGẶT:
-1. Hãy trả lời ĐẦY ĐỦ, TRỌN VẸN CÂU HOẶC BẢNG. Tuyệt đối không dừng câu giữa chừng.
-2. Nếu người dùng hỏi danh sách / bảng biểu, hãy dùng BẢNG MARKDOWN chuẩn dạng:
-| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |
-| --- | --- | --- | --- | --- |
-3. Trả lời thẳng vào vấn đề, rõ ràng, chính xác."""
+QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
+1. Bạn phải trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối, tuyệt đối KHÔNG ĐƯỢC ngắt câu giữa chừng.
+2. Nếu người dùng hỏi danh sách / thống kê / mặt hàng, BẮT BUỘC trình bày dưới dạng BẢNG MARKDOWN chuẩn dạng:
+| STT | Mã VT | Tên Vật Tư | ĐVT | Tồn Đầu | Nhập | Xuất | Tồn Cuối | Ghi Chú |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+3. Hãy liệt kê chi tiết các mặt hàng thỏa mãn điều kiện câu hỏi."""
 
     body = {
-        "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nCÂU HỎI: {question}"}]}],
+        "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nCÂU HỎI CỦA NGUỜI DÙNG: {question}"}]}],
         "generationConfig": {
-            "maxOutputTokens": 8192,  # Tăng max token lên tối đa để trả lời không bao giờ bị đứt đoạn
+            "maxOutputTokens": 8192,
             "temperature": 0.2
         }
     }
-    
-    # Sử dụng gemini-2.0-flash mượt mà và không lãng phí token suy nghĩ
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-    resp = requests.post(url, params={"key": api_key}, json=body)
-    
-    if resp.status_code != 200:
-        # Dự phòng dùng 1.5-flash nếu 2.0 bận
-        url_fb = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-        resp = requests.post(url_fb, params={"key": api_key}, json=body)
-        if resp.status_code != 200:
-            raise Exception(f"Lỗi AI: {resp.text[:200]}")
-            
-    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    # Danh sách các Model chính thức để thử kết nối (Tránh lỗi 404)
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest"
+    ]
+
+    last_error = ""
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        try:
+            resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                candidates = res_json.get("candidates", [])
+                if candidates and "content" in candidates[0]:
+                    parts = candidates[0]["content"].get("parts", [])
+                    # Ghép toàn bộ các đoạn văn bản lại để đảm bảo không bị thiếu chữ
+                    text_parts = [p.get("text", "") for p in parts if "text" in p]
+                    full_text = "".join(text_parts).strip()
+                    if full_text:
+                        return full_text
+            else:
+                last_error = resp.text
+        except Exception as e:
+            last_error = str(e)
+
+    raise Exception(f"Lỗi AI ({last_error[:200]})")
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
@@ -197,7 +213,7 @@ with tab_chat:
             with st.chat_message("user"): st.markdown(question)
             st.session_state.messages.append({"role": "user", "content": question})
 
-            with st.spinner("🔄 AI đang phân tích dữ liệu đầy đủ..."):
+            with st.spinner("🔄 AI đang phân tích dữ liệu và lập bảng đầy đủ..."):
                 local_answer, need_ai = auto_route_and_process(question, sheets_data)
 
                 if not need_ai:
