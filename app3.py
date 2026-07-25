@@ -6,7 +6,6 @@ import re
 import io
 import requests
 from pathlib import Path
-from cryptography.fernet import Fernet
 
 # ── Cấu hình trang ──────────────────────────────────────────────────────────
 st.set_page_config(
@@ -29,27 +28,18 @@ st.markdown("""
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 EXCEL_PATH = DATA_DIR / "warehouse.xlsx"
-KEY_PATH   = DATA_DIR / ".secret.key"
-
-DEFAULT_SENSITIVE = ["nha_cung_cap", "supplier", "ton_kho", "quantity", "gia_nhap", "cost", "so_luong", "thanh_tien"]
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — BỘ NHẬN DIỆN Ý ĐỊNH & ĐỊNH TUYẾN TỰ ĐỘNG (AUTO-ROUTER)
 # ════════════════════════════════════════════════════════════════════════════
 def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
-    """
-    Tự động phân tích câu hỏi:
-    - Nếu là dạng tính toán/tra cứu đơn giản -> Trả lời ngay (Trả về: text_kết_quả, False)
-    - Nếu là dạng phân tích/tư vấn/phức tạp -> Chuyển sang AI (Trả về: None, True)
-    """
     q_low = question.lower().strip()
 
-    # Danh sách từ khóa ƯU TIÊN GỬI AI (Cần tư vấn, lập luận, dự báo)
-    ai_keywords = ["tại sao", "vì sao", "dự báo", "tư vấn", "lời khuyên", "đánh giá", "xu hướng", "đề xuất", "nên làm gì", "giải thích"]
-    if any(k in q_low for k in ai_keywords):
-        return None, True # Bắt buộc dùng AI
+    # Bắt buộc chuyển cho AI nếu hỏi nâng cao / danh sách / bảng
+    if any(k in q_low for k in ["bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng"]):
+        return None, True 
 
-    # 1. TRA CỨU HÀNG TỒN ÍT / SẮP HẾT (Xử lý nội bộ)
+    # 1. TRA CỨU HÀNG TỒN ÍT / SẮP HẾT (Xử lý nội bộ 0 Token)
     if any(k in q_low for k in ["sắp hết", "tồn ít", "cảnh báo", "hết hàng", "thiếu hàng"]):
         results = []
         for name, df in sheets_dict.items():
@@ -68,7 +58,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
             return "⚡ **[Tự động xử lý - 0 Token]**\n\n" + "\n\n".join(results), False
         return "⚡ **[Tự động xử lý - 0 Token]**: Tất cả mặt hàng đều an toàn (tồn kho > 20).", False
 
-    # 2. TÍNH TỔNG GIÁ TRỊ / TỔNG TIỀN (Xử lý nội bộ)
+    # 2. TÍNH TỔNG GIÁ TRỊ / TỔNG TIỀN
     elif any(k in q_low for k in ["tổng giá trị", "tổng tiền", "giá trị kho", "tổng vốn"]):
         total_val = 0
         details = []
@@ -83,27 +73,10 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
             msg = f"⚡ **[Tự động xử lý - 0 Token]**\n\n💰 **Tổng giá trị:** `{total_val:,.0f} VNĐ`\n\nChi tiết:\n" + "\n".join(details)
             return msg, False
 
-    # 3. TÌM KIẾM THEO TÊN / MÃ (Xử lý nội bộ)
-    elif any(k in q_low for k in ["tìm", "kiếm", "tra mã", "chi tiết về"]):
-        search_kw = re.sub(r'(tìm|kiếm|tra|chi tiết|về|sản phẩm|mặt hàng)', '', q_low).strip()
-        if len(search_kw) >= 2:
-            found = []
-            for name, df in sheets_dict.items():
-                mask = df.astype(str).apply(lambda x: x.str.lower().str.contains(search_kw, na=False)).any(axis=1)
-                match_df = df[mask]
-                if not match_df.empty:
-                    found.append(f"📌 **Tab [{name}] tìm thấy {len(match_df)} dòng:**")
-                    for _, row in match_df.head(5).iterrows():
-                        row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)][:4])
-                        found.append(f"  • {row_str}")
-            if found:
-                return f"⚡ **[Tự động xử lý - Tìm từ khóa '{search_kw}']**\n\n" + "\n".join(found), False
-
-    # Không khớp quy tắc xử lý nhanh -> Tự động chuyển giao cho AI!
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & AI
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI (KHÔNG BỊ CỤT CÂU)
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -127,19 +100,47 @@ def load_all_sheets_from_file(path: str) -> dict[str, pd.DataFrame]:
 def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
     api_key = st.session_state.get("api_key", "")
     if not api_key:
-        raise Exception("Vui lòng nhập API Key ở menu Cài đặt bên trái để AI trả lời câu hỏi này.")
+        raise Exception("Vui lòng nhập API Key ở menu Cài đặt bên trái.")
     
-    prompt_data = [f"=== TAB [{name}] ===\n{df.head(20).to_string(index=False)}" for name, df in sheets_dict.items()]
-    system = "Bạn là trợ lý quản lý kho. Trả lời câu hỏi dựa trên dữ liệu các tab:\n" + "\n\n".join(prompt_data)
+    prompt_data = []
+    for name, df in sheets_dict.items():
+        df_clean = df.dropna(how="all")
+        if not df_clean.empty:
+            prompt_data.append(f"=== TAB [{name}] ===\n{df_clean.head(30).to_string(index=False)}")
+            
+    context = "\n\n".join(prompt_data)
     
+    system = f"""Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu các tab trong kho:
+
+{context}
+
+QUY TẮC TRẢ LỜI NGHIÊM NGẶT:
+1. Hãy trả lời ĐẦY ĐỦ, TRỌN VẸN CÂU HOẶC BẢNG. Tuyệt đối không dừng câu giữa chừng.
+2. Nếu người dùng hỏi danh sách / bảng biểu, hãy dùng BẢNG MARKDOWN chuẩn dạng:
+| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |
+| --- | --- | --- | --- | --- |
+3. Trả lời thẳng vào vấn đề, rõ ràng, chính xác."""
+
     body = {
         "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nCÂU HỎI: {question}"}]}],
-        "generationConfig": {"maxOutputTokens": 1500}
+        "generationConfig": {
+            "maxOutputTokens": 8192,  # Tăng max token lên tối đa để trả lời không bao giờ bị đứt đoạn
+            "temperature": 0.2
+        }
     }
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    
+    # Sử dụng gemini-2.0-flash mượt mà và không lãng phí token suy nghĩ
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     resp = requests.post(url, params={"key": api_key}, json=body)
-    if resp.status_code != 200: raise Exception(f"Lỗi AI: {resp.text[:200]}")
-    return "🤖 **[Phân tích bởi AI]**\n\n" + resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    
+    if resp.status_code != 200:
+        # Dự phòng dùng 1.5-flash nếu 2.0 bận
+        url_fb = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        resp = requests.post(url_fb, params={"key": api_key}, json=body)
+        if resp.status_code != 200:
+            raise Exception(f"Lỗi AI: {resp.text[:200]}")
+            
+    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
@@ -160,7 +161,7 @@ with st.sidebar:
             st.session_state.gsheet_url = gsheet_url
             try:
                 sheets_data = load_all_sheets_from_gsheet(gsheet_url)
-                st.success(f"✅ Kết nối {len(sheets_data)} tab!")
+                st.success(f"✅ Kết nối thành công {len(sheets_data)} tab!")
             except Exception: st.error("❌ Lỗi đọc Google Sheet!")
     else:
         uploaded = st.file_uploader("Tải file Excel", type=["xlsx", "xls"])
@@ -172,7 +173,6 @@ with st.sidebar:
             sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
 
 st.markdown("# 🏭 AI Quản Lý Kho Hàng")
-st.caption("✨ Tự động phân loại câu hỏi: Tra cứu đơn giản = Miễn phí 0 Token • Câu hỏi khó = Tự gọi AI")
 
 if not sheets_data:
     st.info("👈 Vui lòng dán Link Google Sheet hoặc tải file Excel ở sidebar trái.")
@@ -190,26 +190,23 @@ with tab_chat:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="Thử gõ: 'Mặt hàng nào sắp hết' hoặc 'Nên nhập thêm hàng gì tuần tới?'")
+    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Liệt kê các mặt hàng tồn kho lâu nhất trong kho")
 
     if st.button("🚀 Gửi câu hỏi", type="primary"):
         if question:
             with st.chat_message("user"): st.markdown(question)
             st.session_state.messages.append({"role": "user", "content": question})
 
-            with st.spinner("🔄 Hệ thống đang kiểm tra và xử lý câu hỏi..."):
-                # 1. Kiểm tra xem có thể tự trả lời bằng Code không (Auto Router)
+            with st.spinner("🔄 AI đang phân tích dữ liệu đầy đủ..."):
                 local_answer, need_ai = auto_route_and_process(question, sheets_data)
 
                 if not need_ai:
-                    # Tra cứu thành công nội bộ -> Không tốn Token nào!
                     final_ans = local_answer
                 else:
-                    # Câu hỏi cần sự suy luận -> Gọi AI xử lý
                     try:
                         final_ans = ask_ai(question, sheets_data)
                     except Exception as e:
-                        final_ans = f"❌ {str(e)}"
+                        final_ans = f"❌ Lỗi: {str(e)}"
 
                 with st.chat_message("assistant"):
                     st.markdown(final_ans)
