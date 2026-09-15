@@ -4,7 +4,7 @@ import plotly.express as px
 
 st.set_page_config(page_title="AI Kho Hàng", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 1. KHỞI TẠO BỘ NHỚ SESSION STATE ---
+# --- 1. BỘ NHỚ SESSION STATE ---
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "df_data" not in st.session_state:
@@ -23,45 +23,38 @@ if "df_data" not in st.session_state:
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
     st.session_state.df_data = df_init
 
-# --- 2. CSS TÙY CHỈNH NÚT TRÒN AI Ở GÓC DƯỚI BÊN PHẢI ---
+# --- 2. CSS RIÊNG DÀNH CHO NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
 st.markdown("""
     <style>
-    div[data-testid="stPopover"] {
+    /* Chỉ định vị trí nút AI nổi ở góc dưới bên phải */
+    .ai-chat-float {
         position: fixed;
         bottom: 30px;
         right: 30px;
         z-index: 999999;
     }
-    div[data-testid="stPopover"] > button {
+    .ai-chat-float div[data-testid="stPopover"] > button {
         width: 60px !important;
         height: 60px !important;
         border-radius: 50% !important;
         background-color: #007bff !important;
         color: white !important;
         border: none !important;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+        font-size: 26px !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
-        font-size: 26px !important;
-        transition: transform 0.2s ease-in-out;
     }
-    div[data-testid="stPopover"] > button:hover {
-        transform: scale(1.1);
+    .ai-chat-float div[data-testid="stPopover"] > button:hover {
         background-color: #0056b3 !important;
-    }
-    div[data-testid="stPopoverBody"] {
-        width: 380px !important;
-        max-height: 520px !important;
-        border-radius: 15px !important;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.2) !important;
-        padding: 15px !important;
+        transform: scale(1.08);
     }
     </style>
 """, unsafe_allow_html=True)
 
 # --- 3. THANH TIÊU ĐỀ & NÚT CÀI ĐẶT Ở GÓC TRÊN BÊN PHẢI ---
-col_title, col_settings = st.columns([0.82, 0.18])
+col_title, col_settings = st.columns([0.8, 0.2])
 
 with col_title:
     st.title("📦 AI Kho Hàng")
@@ -97,13 +90,12 @@ with col_settings:
             except Exception:
                 st.error("Lỗi đọc file.")
 
-# --- 4. GIAO DIỆN CHÍNH (DASHBOARD TỔNG QUAN) ---
+# --- 4. DASHBOARD TỔNG QUAN ---
 df = st.session_state.df_data
 
 st.subheader("📊 Chỉ số KPI chính")
 kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
 
-# Sửa lỗi kiểm tra cột chuẩn cú pháp Pandas
 tong_sku = df["SKU"].nunique() if "SKU" in df.columns else len(df)
 tong_ton = df["Ton_Kho"].sum() if "Ton_Kho" in df.columns else 0
 nhap_thang = df["Nhap_Thang"].sum() if "Nhap_Thang" in df.columns else 0
@@ -147,7 +139,8 @@ with col2:
                         color="Khu_Vuc", text_auto=True)
         st.plotly_chart(fig_wh, use_container_width=True)
 
-# --- 5. BONG BÓNG TRỢ LÝ AI (NÚT TRÒN FLOATING GÓC DƯỚI BÊN PHẢI) ---
+# --- 5. BONG BÓNG TRỢ LÝ AI (ĐẶT TRONG CLASS BẢO VỆ) ---
+st.markdown('<div class="ai-chat-float">', unsafe_allow_html=True)
 with st.popover("🤖"):
     st.markdown("### 🤖 Trợ lý AI Kho Hàng")
     st.caption("Truy vấn thông tin kho nhanh chóng")
@@ -175,3 +168,4 @@ with st.popover("🤖"):
                     response = f"🤖 AI đang phân tích dữ liệu kho cho câu hỏi: '{prompt}'."
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
+st.markdown('</div>', unsafe_allow_html=True)
