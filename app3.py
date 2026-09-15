@@ -4,9 +4,13 @@ import plotly.express as px
 
 st.set_page_config(page_title="AI Kho Hàng", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 1. BỘ NHỚ SESSION STATE ---
+# --- 1. KHỞI TẠO SESSION STATE ---
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
+if "is_logged_in" not in st.session_state:
+    st.session_state.is_logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
 if "df_data" not in st.session_state:
     data = {
         "SKU": [f"SKU{i:03d}" for i in range(1, 21)],
@@ -23,52 +27,80 @@ if "df_data" not in st.session_state:
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
     st.session_state.df_data = df_init
 
-# --- 2. CSS RIÊNG DÀNH CHO NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
+# --- 2. CSS TÙY CHỈNH NÚT AI "BẠN CẦN HỖ TRỢ?" GIỐNG MẪU ---
 st.markdown("""
     <style>
-    /* Chỉ định vị trí nút AI nổi ở góc dưới bên phải */
+    /* CSS cho nút AI góc dưới bên phải giống MobileCity */
     .ai-chat-float {
         position: fixed;
-        bottom: 30px;
-        right: 30px;
+        bottom: 25px;
+        right: 25px;
         z-index: 999999;
     }
     .ai-chat-float div[data-testid="stPopover"] > button {
-        width: 60px !important;
-        height: 60px !important;
-        border-radius: 50% !important;
-        background-color: #007bff !important;
+        background-color: #ff9800 !important;
         color: white !important;
         border: none !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
-        font-size: 26px !important;
+        border-radius: 30px !important;
+        padding: 8px 18px !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.25) !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
         display: flex !important;
         align-items: center !important;
-        justify-content: center !important;
+        gap: 8px !important;
+        transition: transform 0.2s ease, background-color 0.2s ease;
     }
     .ai-chat-float div[data-testid="stPopover"] > button:hover {
-        background-color: #0056b3 !important;
-        transform: scale(1.08);
+        background-color: #e68a00 !important;
+        transform: scale(1.05);
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. THANH TIÊU ĐỀ & NÚT CÀI ĐẶT Ở GÓC TRÊN BÊN PHẢI ---
-col_title, col_settings = st.columns([0.8, 0.2])
+# --- 3. THANH TIÊU ĐỀ, ĐĂNG NHẬP VÀ CÀI ĐẶT ---
+col_title, col_user, col_settings = st.columns([0.65, 0.2, 0.15])
 
 with col_title:
     st.title("📦 AI Kho Hàng")
+
+with col_user:
+    st.write("")
+    if not st.session_state.is_logged_in:
+        with st.popover("👤 Đăng nhập", use_container_width=True):
+            tab_login, tab_register = st.tabs(["Đăng nhập", "Đăng ký"])
+            
+            with tab_login:
+                user_input = st.text_input("Tên đăng nhập")
+                pass_input = st.text_input("Mật khẩu", type="password")
+                if st.button("Xác nhận đăng nhập", use_container_width=True):
+                    if user_input:
+                        st.session_state.is_logged_in = True
+                        st.session_state.username = user_input
+                        st.rerun()
+                    else:
+                        st.error("Vui lòng nhập tên đăng nhập!")
+            
+            with tab_register:
+                st.text_input("Họ và tên")
+                st.text_input("Tên tài khoản mới")
+                st.text_input("Mật khẩu mới", type="password")
+                if st.button("Tạo tài khoản", use_container_width=True):
+                    st.success("Tạo tài khoản thành công! Bạn có thể đăng nhập.")
+    else:
+        with st.popover(f"👤 {st.session_state.username}", use_container_width=True):
+            st.write(f"Xin chào, **{st.session_state.username}**!")
+            if st.button("Đăng xuất", use_container_width=True):
+                st.session_state.is_logged_in = False
+                st.session_state.username = ""
+                st.rerun()
 
 with col_settings:
     st.write("") 
     with st.popover("⚙️ Cài đặt", use_container_width=True):
         st.subheader("🛠️ Cấu hình hệ thống")
         
-        input_key = st.text_input(
-            "🔑 Nhập API Key", 
-            value=st.session_state.api_key, 
-            type="password"
-        )
+        input_key = st.text_input("🔑 Nhập API Key", value=st.session_state.api_key, type="password")
         if input_key != st.session_state.api_key:
             st.session_state.api_key = input_key
             st.success("Đã cập nhật API Key!")
@@ -139,11 +171,11 @@ with col2:
                         color="Khu_Vuc", text_auto=True)
         st.plotly_chart(fig_wh, use_container_width=True)
 
-# --- 5. BONG BÓNG TRỢ LÝ AI (ĐẶT TRONG CLASS BẢO VỆ) ---
+# --- 5. NÚT TRỢ LÝ AI "BẠN CẦN HỖ TRỢ?" Ở GÓC DƯỚI BÊN PHẢI ---
 st.markdown('<div class="ai-chat-float">', unsafe_allow_html=True)
-with st.popover("🤖"):
+with st.popover("💬 Bạn cần hỗ trợ?"):
     st.markdown("### 🤖 Trợ lý AI Kho Hàng")
-    st.caption("Truy vấn thông tin kho nhanh chóng")
+    st.caption("Giải đáp thông tin dữ liệu kho 24/7")
     
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -154,7 +186,7 @@ with st.popover("🤖"):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-    if prompt := st.chat_input("Hỏi AI..."):
+    if prompt := st.chat_input("Nhập câu hỏi..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         
         with chat_container:
@@ -163,9 +195,9 @@ with st.popover("🤖"):
 
             with st.chat_message("assistant"):
                 if not st.session_state.api_key:
-                    response = "⚠️ Vui lòng nhấp nút **⚙️ Cài đặt** góc trên bên phải để nhập API Key trước."
+                    response = "⚠️ Vui lòng nhấp nút **⚙️ Cài đặt** ở góc trên bên phải để nhập API Key."
                 else:
-                    response = f"🤖 AI đang phân tích dữ liệu kho cho câu hỏi: '{prompt}'."
+                    response = f"🤖 AI đang xử lý yêu cầu của bạn: '{prompt}'."
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
 st.markdown('</div>', unsafe_allow_html=True)
