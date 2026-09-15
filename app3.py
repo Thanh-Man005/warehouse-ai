@@ -30,6 +30,7 @@ if "df_data" not in st.session_state:
 # --- 2. CSS CỐ ĐỊNH NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
 css_code = """
 <style>
+/* Đưa container chứa nút popover AI xuống cố định góc dưới bên phải */
 div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]),
 div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]),
 div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) {
@@ -40,6 +41,7 @@ div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ t
     width: auto !important;
 }
 
+/* Style cho nút AI nổi bật */
 div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button,
 div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button,
 div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button {
@@ -77,4 +79,131 @@ with col_user:
             tab_login, tab_register = st.tabs(["Đăng nhập", "Đăng ký"])
             
             with tab_login:
-                user_input
+                user_input = st.text_input("Tên đăng nhập", key="login_username")
+                pass_input = st.text_input("Mật khẩu", type="password", key="login_password")
+                if st.button("Xác nhận đăng nhập", use_container_width=True):
+                    if user_input:
+                        st.session_state.is_logged_in = True
+                        st.session_state.username = user_input
+                        st.rerun()
+                    else:
+                        st.error("Vui lòng nhập tên đăng nhập!")
+            
+            with tab_register:
+                st.text_input("Họ và tên", key="reg_fullname")
+                st.text_input("Tên tài khoản mới", key="reg_username")
+                st.text_input("Mật khẩu mới", type="password", key="reg_password")
+                if st.button("Tạo tài khoản", use_container_width=True):
+                    st.success("Tạo tài khoản thành công! Bạn có thể đăng nhập.")
+    else:
+        with st.popover(f"👤 {st.session_state.username}", use_container_width=True):
+            st.write(f"Xin chào, **{st.session_state.username}**!")
+            if st.button("Đăng xuất", use_container_width=True):
+                st.session_state.is_logged_in = False
+                st.session_state.username = ""
+                st.rerun()
+
+with col_settings:
+    st.write("") 
+    with st.popover("⚙️ Cài đặt", use_container_width=True):
+        st.subheader("🛠️ Cấu hình hệ thống")
+        
+        input_key = st.text_input("🔑 Nhập API Key", value=st.session_state.api_key, type="password")
+        if input_key != st.session_state.api_key:
+            st.session_state.api_key = input_key
+            st.success("Đã cập nhật API Key!")
+
+        st.markdown("---")
+        st.subheader("📁 Tải tài liệu kho")
+        
+        uploaded_file = st.file_uploader("Tải file Excel/CSV mới", type=["xlsx", "xls", "csv"])
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df_new = pd.read_csv(uploaded_file)
+                else:
+                    df_new = pd.read_excel(uploaded_file)
+                if "Gia_Tri_Ton" not in df_new.columns and "Ton_Kho" in df_new.columns and "Gia_Nhap" in df_new.columns:
+                    df_new["Gia_Tri_Ton"] = df_new["Ton_Kho"] * df_new["Gia_Nhap"]
+                st.session_state.df_data = df_new
+                st.success("Đã lưu dữ liệu mới!")
+            except Exception:
+                st.error("Lỗi đọc file.")
+
+# --- 4. DASHBOARD TỔNG QUAN ---
+df = st.session_state.df_data
+
+st.subheader("📊 Chỉ số KPI chính")
+kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
+
+tong_sku = df["SKU"].nunique() if "SKU" in df.columns else len(df)
+tong_ton = df["Ton_Kho"].sum() if "Ton_Kho" in df.columns else 0
+nhap_thang = df["Nhap_Thang"].sum() if "Nhap_Thang" in df.columns else 0
+xuat_thang = df["Xuat_Thang"].sum() if "Xuat_Thang" in df.columns else 0
+sku_canh_bao = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]]["SKU"].count() if ("Muc_Toi_Thieu" in df.columns and "Ton_Kho" in df.columns) else 0
+gia_tri_ton = df["Gia_Tri_Ton"].sum() if "Gia_Tri_Ton" in df.columns else 0
+
+kpi1.metric("📦 Tổng SKU", f"{tong_sku:,}")
+kpi2.metric("📊 Tổng tồn kho", f"{tong_ton:,}")
+kpi3.metric("⬆️ Nhập trong tháng", f"{nhap_thang:,}")
+kpi4.metric("⬇️ Xuất trong tháng", f"{xuat_thang:,}")
+kpi5.metric("🔴 SKU dưới tối thiểu", f"{sku_canh_bao:,}")
+kpi6.metric("💰 Giá trị tồn kho", f"{gia_tri_ton:,.0f} VNĐ")
+
+st.markdown("---")
+
+col1, col2 = st.columns(2)
+with col1:
+    if "Ton_Kho" in df.columns and "Ten_San_Pham" in df.columns:
+        top_10 = df.nlargest(10, "Ton_Kho")
+        fig_top10 = px.bar(top_10, x="Ton_Kho", y="Ten_San_Pham", orientation="h",
+                           title="Top 10 sản phẩm tồn nhiều nhất", text_auto=True,
+                           color="Ton_Kho", color_continuous_scale="Blues")
+        fig_top10.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_top10, use_container_width=True)
+
+    if "Nhom_Hang" in df.columns and "Ton_Kho" in df.columns:
+        by_cat = df.groupby("Nhom_Hang")["Ton_Kho"].sum().reset_index()
+        fig_cat = px.pie(by_cat, values="Ton_Kho", names="Nhom_Hang", title="Phân bố tồn kho theo nhóm hàng", hole=0.4)
+        st.plotly_chart(fig_cat, use_container_width=True)
+
+with col2:
+    if "Muc_Toi_Thieu" in df.columns and "Ton_Kho" in df.columns:
+        sap_het = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]].sort_values("Ton_Kho")
+        st.write("⚠️ **Top sản phẩm sắp hết (Dưới mức tối thiểu)**")
+        st.dataframe(sap_het[["SKU", "Ten_San_Pham", "Ton_Kho", "Muc_Toi_Thieu"]], use_container_width=True)
+
+    if "Khu_Vuc" in df.columns and "Ton_Kho" in df.columns:
+        by_warehouse = df.groupby("Khu_Vuc")["Ton_Kho"].sum().reset_index()
+        fig_wh = px.bar(by_warehouse, x="Khu_Vuc", y="Ton_Kho", title="Tồn kho theo từng khu vực/kho",
+                        color="Khu_Vuc", text_auto=True)
+        st.plotly_chart(fig_wh, use_container_width=True)
+
+# --- 5. NÚT AI HỎI ĐÁP (CỐ ĐỊNH GÓC DƯỚI BÊN PHẢI) ---
+with st.popover("💬 Bạn cần hỗ trợ?"):
+    st.markdown("### 🤖 Trợ lý AI Kho Hàng")
+    st.caption("Giải đáp thông tin dữ liệu kho 24/7")
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    chat_container = st.container(height=280)
+    with chat_container:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+    if prompt := st.chat_input("Nhập câu hỏi..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        with chat_container:
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                if not st.session_state.api_key:
+                    response = "⚠️ Vui lòng nhấp nút **⚙️ Cài đặt** ở góc trên bên phải để nhập API Key."
+                else:
+                    response = f"🤖 AI đang xử lý yêu cầu của bạn: '{prompt}'."
+                st.markdown(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
