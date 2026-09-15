@@ -3,21 +3,25 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
-# --- 1. THIẾT LẬP TRANG ---
-st.set_page_config(page_title="AI Kho Hàng - Dự Báo & Cảnh Báo", layout="wide", initial_sidebar_state="expanded")
+# --- 1. THIẾT LẬP TRANG GIAO DIỆN ---
+st.set_page_config(
+    page_title="AI Kho Hàng - Nâng Cấp Toàn Diện", 
+    layout="wide", 
+    initial_sidebar_state="expanded"
+)
 
-# --- 2. DỮ LIỆU MẶC ĐỊNH & XỬ LÝ EXCEL ---
+# --- 2. DỮ LIỆU MẶC ĐỊNH & XỬ LÝ EXCEL / CSV ---
 def get_default_df():
     return pd.DataFrame({
-        "SKU": [f"SKU{i:03d}" for i in range(1, 21)],
-        "Ten_San_Pham": [f"Sản phẩm {i}" for i in range(1, 21)],
-        "Nhom_Hang": ["Đồ điện tử", "Thực phẩm", "Gia dụng", "Đồ điện tử", "Thực phẩm"] * 4,
-        "Ton_Kho": [450, 400, 350, 320, 300, 280, 250, 210, 180, 150, 90, 80, 60, 40, 20, 8, 5, 4, 2, 0],
-        "Nhap_Trong_Thang": [50] * 20,
-        "Xuat_Trong_Thang": [120, 90, 80, 60, 50, 40, 30, 20, 15, 10, 5, 4, 3, 2, 1, 10, 8, 6, 4, 0],
-        "Muc_Toi_Thieu": [10] * 20,
-        "Gia_Tri_Ton": [1000000] * 20,
-        "Khu_Vuc": ["Khu A", "Khu B", "Khu C", "Khu A", "Khu B"] * 4
+        "SKU": [f"SKU{i:03d}" for i in range(1, 16)],
+        "Ten_San_Pham": [f"Vật tư / Sản phẩm {i}" for i in range(1, 16)],
+        "Nhom_Hang": ["Đồ điện tử", "Gia dụng", "Vật tư cơ khí", "Đồ điện tử", "Gia dụng"] * 3,
+        "Ton_Kho": [450, 320, 250, 180, 90, 80, 60, 40, 20, 10, 8, 5, 4, 2, 0],
+        "Nhap_Trong_Thang": [100, 50, 40, 30, 20, 10, 10, 5, 5, 0, 0, 0, 0, 0, 0],
+        "Xuat_Trong_Thang": [120, 90, 80, 50, 40, 30, 20, 15, 10, 5, 4, 3, 2, 1, 0],
+        "Muc_Toi_Thieu": [15] * 15,
+        "Gia_Tri_Ton": [1500000, 1200000, 800000, 600000, 400000, 300000, 200000, 150000, 100000, 50000, 40000, 30000, 20000, 10000, 0],
+        "Khu_Vuc": ["Kho A", "Kho B", "Kho C", "Kho A", "Kho B"] * 3
     })
 
 def process_excel_warehouse(uploaded_file):
@@ -35,13 +39,13 @@ def process_excel_warehouse(uploaded_file):
         for idx in range(min(25, len(df_raw))):
             row_vals = [str(v).lower() for v in df_raw.iloc[idx].values if pd.notna(v)]
             row_str = " ".join(row_vals)
-            if "mã vt" in row_str or "tên vật tư" in row_str:
+            if "mã vt" in row_str or "tên vật tư" in row_str or "sku" in row_str:
                 start_row = idx
                 break
 
         data_rows = df_raw.iloc[start_row + 1:].copy().dropna(how='all')
         if data_rows.empty:
-            return get_default_df()
+            return df_raw, get_default_df()
 
         num_cols = data_rows.shape[1]
         col_ma = 1 if num_cols > 1 else 0
@@ -58,7 +62,6 @@ def process_excel_warehouse(uploaded_file):
         df_clean["Xuat_Trong_Thang"] = pd.to_numeric(data_rows.iloc[:, col_xuat], errors='coerce').fillna(0)
         df_clean["Ton_Kho"] = pd.to_numeric(data_rows.iloc[:, col_ton], errors='coerce').fillna(0)
         df_clean["Gia_Tri_Ton"] = pd.to_numeric(data_rows.iloc[:, col_giatri], errors='coerce').fillna(0)
-
         df_clean["Nhom_Hang"] = "Vật tư kho"
         df_clean["Muc_Toi_Thieu"] = 10
         df_clean["Khu_Vuc"] = "Kho Chính"
@@ -67,13 +70,15 @@ def process_excel_warehouse(uploaded_file):
         df_clean = df_clean[~df_clean["Ten_San_Pham"].str.contains("Tổng cộng|Tên vật tư|STT|Mã VT|nan|None", case=False, na=False)]
         df_clean = df_clean[~df_clean["SKU"].str.contains("Mã VT|STT|nan|None", case=False, na=False)]
 
-        return df_clean.reset_index(drop=True) if not df_clean.empty else get_default_df()
-    except Exception:
-        return get_default_df()
+        return df_raw, df_clean.reset_index(drop=True)
+    except Exception as e:
+        return pd.DataFrame(), get_default_df()
 
 # Khởi tạo Session State
 if "df_data" not in st.session_state:
     st.session_state.df_data = get_default_df()
+if "df_raw" not in st.session_state:
+    st.session_state.df_raw = pd.DataFrame()
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "is_logged_in" not in st.session_state:
@@ -83,42 +88,39 @@ if "username" not in st.session_state:
 if "last_file_id" not in st.session_state:
     st.session_state.last_file_id = ""
 
-# --- 3. ĐỘNG CƠ AI: TẠO BẢNG + DỰ BÁO + CẢNH BÁO ---
+# --- 3. ĐỘNG CƠ AI PHÂN TÍCH & DỰ BÁO ---
 def analyze_warehouse_data_advanced(query: str, df: pd.DataFrame) -> str:
     q = query.lower().strip()
     if df.empty:
         return "⚠️ Dữ liệu kho đang rỗng. Vui lòng kiểm tra lại file tải lên."
 
     df_calc = df.copy()
-    # Tốc độ xuất/ngày (30 ngày/tháng)
     df_calc["Xuat_Ngay"] = df_calc["Xuat_Trong_Thang"] / 30.0
-    # Số ngày tồn kho còn lại (Days of Supply)
     df_calc["So_Ngay_Ton_Kho"] = np.where(
         df_calc["Xuat_Ngay"] > 0, 
         df_calc["Ton_Kho"] / df_calc["Xuat_Ngay"], 
         999
     )
-    # Số lượng đề xuất nhập (Mục tiêu = 2 x Mức tối thiểu)
     df_calc["De_Xuat_Nhap"] = np.maximum(0, (df_calc["Muc_Toi_Thieu"] * 2) - df_calc["Ton_Kho"])
 
-    # 1. TÍNH NĂNG CẢNH BÁO
-    if any(k in q for k in ["cảnh báo", "canh bao", "nguy cơ", "cháy hàng", "tồn đọng", "dư thừa"]):
+    # CẢNH BÁO
+    if any(k in q for k in ["cảnh báo", "canh bao", "nguy cơ", "cháy hàng", "tồn đọng"]):
         canh_bao_do = df_calc[df_calc["Ton_Kho"] <= df_calc["Muc_Toi_Thieu"]]
-        canh_bao_vang = df_calc[(df_calc["Ton_Kho"] > 300) & (df_calc["Xuat_Trong_Thang"] == 0)]
+        canh_bao_vang = df_calc[(df_calc["Ton_Kho"] > 200) & (df_calc["Xuat_Trong_Thang"] == 0)]
         
         res = "🚨 **HỆ THỐNG CẢNH BÁO KHO HÀNG TỰ ĐỘNG**\n\n"
-        res += f"🔴 **Cảnh báo Đỏ (Cảnh báo cháy hàng / Dưới định mức - {len(canh_bao_do)} SKU):**\n"
+        res += f"🔴 **Cảnh báo Đỏ (Dưới định mức tối thiểu - {len(canh_bao_do)} SKU):**\n"
         if not canh_bao_do.empty:
-            res += "| Mã SKU | Tên Sản Phẩm | Tồn Hiện Tại | Ngưỡng Tối Thiểu | Đề Xuất Nhập Bổ Sung |\n"
+            res += "| Mã SKU | Tên Sản Phẩm | Tồn Hiện Tại | Định Mức | Đề Xuất Nhập |\n"
             res += "| :--- | :--- | :---: | :---: | :---: |\n"
             for _, r in canh_bao_do.head(5).iterrows():
                 res += f"| `{r['SKU']}` | {r['Ten_San_Pham']} | **{int(r['Ton_Kho']):,}** | {int(r['Muc_Toi_Thieu']):,} | ➕ **{int(r['De_Xuat_Nhap']):,}** |\n"
         else:
-            res += "✅ Tất cả sản phẩm đều trên ngưỡng tối thiểu.\n"
+            res += "✅ Không có sản phẩm nào dưới định mức.\n"
 
-        res += f"\n🟡 **Cảnh báo Vàng (Hàng tồn đọng / Không xuất bán - {len(canh_bao_vang)} SKU):**\n"
+        res += f"\n🟡 **Cảnh báo Vàng (Tồn đọng lớn / Không có giao dịch xuất - {len(canh_bao_vang)} SKU):**\n"
         if not canh_bao_vang.empty:
-            res += "| Mã SKU | Tên Sản Phẩm | Tồn Kho Hiện Tại | Giá Trị Tồn Kho |\n"
+            res += "| Mã SKU | Tên Sản Phẩm | Tồn Kho | Giá Trị Tồn |\n"
             res += "| :--- | :--- | :---: | :---: |\n"
             for _, r in canh_bao_vang.head(5).iterrows():
                 res += f"| `{r['SKU']}` | {r['Ten_San_Pham']} | {int(r['Ton_Kho']):,} | {r['Gia_Tri_Ton']:,.0f} VNĐ |\n"
@@ -126,7 +128,7 @@ def analyze_warehouse_data_advanced(query: str, df: pd.DataFrame) -> str:
             res += "✅ Không phát hiện hàng tồn đọng bất thường.\n"
         return res
 
-    # 2. TÍNH NĂNG DỰ BÁO
+    # DỰ BÁO
     if any(k in q for k in ["dự báo", "du bao", "bao lâu", "ngày hết", "kế hoạch nhập"]):
         df_forecast = df_calc[df_calc["Xuat_Ngay"] > 0].sort_values("So_Ngay_Ton_Kho").head(7)
         
@@ -138,22 +140,49 @@ def analyze_warehouse_data_advanced(query: str, df: pd.DataFrame) -> str:
             res += f"| `{r['SKU']}` | {r['Ten_San_Pham']} | {int(r['Ton_Kho']):,} | {r['Xuat_Ngay']:.1f} | {days_str} | 📦 **{int(r['De_Xuat_Nhap']):,}** |\n"
         return res
 
-    # 3. TẠO BẢNG TỔNG QUAN
+    # BẢNG TỔNG QUAN
     if any(k in q for k in ["bảng", "tạo bảng", "danh sách", "chi tiết"]):
         res = "📋 **BẢNG BÁO CÁO TỔNG QUAN XUẤT - NHẬP - TỒN**\n\n"
         res += "| Mã SKU | Tên Sản Phẩm | Tồn Kho | Nhập Tháng | Xuất Tháng | Giá Trị Tồn |\n"
         res += "| :--- | :--- | :---: | :---: | :---: | :---: |\n"
-        for _, r in df_calc.head(8).iterrows():
+        for _, r in df_calc.head(10).iterrows():
             res += f"| `{r['SKU']}` | {r['Ten_San_Pham']} | {int(r['Ton_Kho']):,} | {int(r['Nhap_Trong_Thang']):,} | {int(r['Xuat_Trong_Thang']):,} | {r['Gia_Tri_Ton']:,.0f} VNĐ |\n"
         return res
 
-    return f"🤖 **Trợ lý AI Kho Hàng:** Đang quản lý **{len(df)}** mặt hàng.\n\nThử các câu lệnh:\n- *'Cho tôi xem cảnh báo kho'* (Phân tích nguy cơ hết hàng/tồn đọng)\n- *'Dự báo cạn kho'* (Dự báo số ngày cạn kho & đề xuất nhập)\n- *'Tạo bảng danh sách'* (Tự động xuất bảng tổng hợp)"
+    return f"🤖 **Trợ lý AI Kho Hàng:** Đang quản lý **{len(df)}** mặt hàng.\n\nBạn có thể thử các câu hỏi:\n- *'Cảnh báo kho'* (Phân tích nguy cơ hết hàng & tồn đọng)\n- *'Dự báo cạn kho'* (Dự báo số ngày cạn kho & đề xuất nhập bù)\n- *'Tạo bảng báo cáo'* (Xuất bảng chi tiết)"
 
-# --- 4. SIDEBAR CHỨA TRỢ LÝ AI & CÀI ĐẶT ---
+# --- 4. DIALOG / MODAL MỞ RỘNG TOÀN MÀN HÌNH CHO AI ---
+@st.dialog("🖥️ Trợ Lý AI Kho Hàng - Chế Độ Mở Rộng", width="large")
+def show_fullscreen_ai_chat():
+    st.markdown(" Giao diện mở rộng giúp bạn dễ dàng theo dõi các bảng dữ liệu phức tạp và biểu đồ từ AI.")
+    
+    chat_container = st.container(height=450)
+    with chat_container:
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
+                
+    with st.form("modal_chat_form", clear_on_submit=True):
+        col_in, col_btn = st.columns([0.8, 0.2])
+        with col_in:
+            m_input = st.text_input("Nhập yêu cầu cho AI...", placeholder="Ví dụ: Dự báo cạn kho...", label_visibility="collapsed")
+        with col_btn:
+            submitted = st.form_submit_button("🚀 Gửi câu hỏi", use_container_width=True)
+        if submitted and m_input.strip():
+            st.session_state.messages.append({"role": "user", "content": m_input})
+            reply = analyze_warehouse_data_advanced(m_input, st.session_state.df_data)
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+            st.rerun()
+
+# --- 5. SIDEBAR QUẢN LÝ & CÀI ĐẶT ---
 with st.sidebar:
     st.header("🤖 Trợ Lý AI Kho Hàng")
     
-    sidebar_chat = st.container(height=320)
+    # Nút mở rộng Toàn màn hình
+    if st.button("🖥️ Mở rộng khung AI Toàn Màn Hình", use_container_width=True, type="primary"):
+        show_fullscreen_ai_chat()
+
+    sidebar_chat = st.container(height=280)
     with sidebar_chat:
         if not st.session_state.messages:
             st.markdown("👋 *Tôi có thể giúp bạn **Dự báo nhu cầu**, **Cảnh báo hết hàng** và **Tạo bảng dữ liệu**.*")
@@ -162,7 +191,7 @@ with st.sidebar:
                 st.markdown(m["content"])
 
     with st.form("sidebar_chat_form", clear_on_submit=True):
-        u_input = st.text_input("Hỏi AI...", placeholder="Ví dụ: Dự báo cạn kho...")
+        u_input = st.text_input("Hỏi AI...", placeholder="Cảnh báo kho...")
         if st.form_submit_button("Gửi câu hỏi", use_container_width=True) and u_input.strip():
             st.session_state.messages.append({"role": "user", "content": u_input})
             reply = analyze_warehouse_data_advanced(u_input, st.session_state.df_data)
@@ -170,37 +199,43 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    st.header("⚙️ Cấu hình & Dữ liệu")
+    st.header("⚙️ Nguồn Dữ Liệu Kho")
     file_up = st.file_uploader("Tải file Excel/CSV kho", type=["xlsx", "xls", "csv"], key="sidebar_file_up")
     if file_up is not None:
         cur_id = f"{file_up.name}_{file_up.size}"
         if st.session_state.last_file_id != cur_id:
-            st.session_state.df_data = process_excel_warehouse(file_up)
+            df_r, df_c = process_excel_warehouse(file_up)
+            st.session_state.df_raw = df_r
+            st.session_state.df_data = df_c
             st.session_state.last_file_id = cur_id
-            st.success("Đã cập nhật dữ liệu thành công!")
+            st.success("Đã nạp và chuẩn hóa dữ liệu!")
 
-# --- 5. TIÊU ĐỀ & POPUP AI ---
-col_title, col_ai_top, col_user = st.columns([0.5, 0.25, 0.25])
+# --- 6. HEADER TRANG CHÍNH ---
+col_title, col_ai_top, col_user = st.columns([0.45, 0.3, 0.25])
 
 with col_title:
     st.title("📦 AI Kho Hàng")
 
 with col_ai_top:
     st.write("")
-    with st.popover("💬 Trợ Lý AI (Cửa sổ)", use_container_width=True):
-        st.markdown("### 🤖 Chat với AI Kho Hàng")
-        top_chat = st.container(height=250)
-        with top_chat:
-            for m in st.session_state.messages:
-                with st.chat_message(m["role"]):
-                    st.markdown(m["content"])
-        with st.form("top_chat_form", clear_on_submit=True):
-            top_in = st.text_input("Hỏi AI...", placeholder="Cảnh báo kho...", label_visibility="collapsed")
-            if st.form_submit_button("Gửi", use_container_width=True) and top_in.strip():
-                st.session_state.messages.append({"role": "user", "content": top_in})
-                reply = analyze_warehouse_data_advanced(top_in, st.session_state.df_data)
-                st.session_state.messages.append({"role": "assistant", "content": reply})
-                st.rerun()
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        if st.button("🖥️ AI Fullscreen", use_container_width=True):
+            show_fullscreen_ai_chat()
+    with col_p2:
+        with st.popover("💬 Chat nhanh", use_container_width=True):
+            top_chat = st.container(height=250)
+            with top_chat:
+                for m in st.session_state.messages:
+                    with st.chat_message(m["role"]):
+                        st.markdown(m["content"])
+            with st.form("top_chat_form", clear_on_submit=True):
+                top_in = st.text_input("Hỏi AI...", placeholder="Dự báo cạn kho...", label_visibility="collapsed")
+                if st.form_submit_button("Gửi", use_container_width=True) and top_in.strip():
+                    st.session_state.messages.append({"role": "user", "content": top_in})
+                    reply = analyze_warehouse_data_advanced(top_in, st.session_state.df_data)
+                    st.session_state.messages.append({"role": "assistant", "content": reply})
+                    st.rerun()
 
 with col_user:
     st.write("")
@@ -218,10 +253,40 @@ with col_user:
                 st.session_state.is_logged_in = False
                 st.rerun()
 
-# --- 6. KPI DASHBOARD ---
-df = st.session_state.df_data
+# --- 7. TÍNH NĂNG 1: XEM TRƯỚC & ĐỐI SOÁT DỮ LIỆU TẢI LÊN ---
+st.subheader("🔍 Xem Trước & Kiểm Định Dữ Liệu Tải Lên")
+with st.expander("📌 Nhấp vào đây để kiểm tra dữ liệu thô và đối soát dữ liệu đã xử lý", expanded=False):
+    tab_clean, tab_raw, tab_val = st.tabs(["📊 Dữ Liệu Đã Xử Lý", "📄 Dữ Liệu Thô (Raw File)", "⚠️ Kiểm Trả Lỗi & Độ Chính Xác"])
+    
+    with tab_clean:
+        st.markdown("**Bảng dữ liệu đã chuẩn hóa (Dùng cho AI & Phân tích):**")
+        st.dataframe(st.session_state.df_data, use_container_width=True)
+        
+    with tab_raw:
+        st.markdown("**Bảng dữ liệu gốc từ File Excel/CSV tải lên:**")
+        if not st.session_state.df_raw.empty:
+            st.dataframe(st.session_state.df_raw.head(30), use_container_width=True)
+        else:
+            st.info("Đang sử dụng dữ liệu mẫu mặc định. Hãy tải file Excel ở sidebar để kiểm tra file thực tế.")
+            
+    with tab_val:
+        st.markdown("**Báo cáo sức khỏe dữ liệu (Data Health Check):**")
+        df_chk = st.session_state.df_data
+        col_v1, col_v2, col_v3 = st.columns(3)
+        col_v1.metric("Tổng số dòng dữ liệu", f"{len(df_chk):,} dòng")
+        col_v2.metric("Số ô bị khuyết (NaN)", f"{df_chk.isna().sum().sum():,} ô")
+        col_v3.metric("Số SKU trùng lặp", f"{df_chk['SKU'].duplicated().sum():,} SKU")
+        
+        if df_chk["Ton_Kho"].isna().any() or df_chk["Gia_Tri_Ton"].isna().any():
+            st.warning("⚠️ Phát hiện có giá trị trống ở cột số lượng/giá trị. Hệ thống đã tự động gán giá trị 0.")
+        else:
+            st.success("✅ Dữ liệu hoàn toàn hợp lệ, không bị mất mát hay sai lệch định dạng!")
 
-st.subheader("📊 Chỉ số KPI chính")
+st.markdown("---")
+
+# --- 8. KPI DASHBOARD ---
+df = st.session_state.df_data
+st.subheader("📊 Chỉ Số KPI Tổng Quan")
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 k1.metric("📦 Tổng SKU", f"{len(df):,}")
@@ -229,43 +294,59 @@ k2.metric("📊 Tổng tồn kho", f"{int(df['Ton_Kho'].sum()):,}")
 k3.metric("📥 Nhập trong tháng", f"{int(df['Nhap_Trong_Thang'].sum()):,}")
 k4.metric("📤 Xuất trong tháng", f"{int(df['Xuat_Trong_Thang'].sum()):,}")
 k5.metric("⚠️ SKU dưới tối thiểu", f"{len(df[df['Ton_Kho'] <= df['Muc_Toi_Thieu']]):,}")
-k6.metric("💰 Giá trị tồn kho", f"{df['Gia_Tri_Ton'].sum():,.0f} VNĐ")
+k6.metric("💰 Giá trị tồn", f"{df['Gia_Tri_Ton'].sum():,.0f} VNĐ")
 
 st.markdown("---")
 
-# --- 7. CHARTS & TABLES ---
-col_left, col_right = st.columns(2)
+# --- 9. TÍNH NĂNG 2: BỘ TẠO BIỂU ĐỒ LINH HOẠT (DYNAMIC CHART GENERATOR) ---
+st.subheader("📈 Trình Tạo Biểu Đồ & Phân Tích Trực Quan")
 
-with col_left:
-    if not df.empty:
-        top10 = df.nlargest(10, "Ton_Kho")
-        fig_top10 = px.bar(top10, x="Ton_Kho", y="Ten_San_Pham", orientation="h",
-                           title="Top 10 sản phẩm tồn nhiều nhất", text_auto=True,
-                           color="Ton_Kho", color_continuous_scale="Blues")
-        fig_top10.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_top10, use_container_width=True)
+tab_auto_chart, tab_custom_chart = st.tabs(["📊 Biểu Đồ AI Tự Động", "🎨 Tùy Chỉnh Biểu Đồ Theo Ý Muốn"])
 
-    if "Nhom_Hang" in df.columns and not df.empty:
-        df_nhom = df.groupby("Nhom_Hang")["Ton_Kho"].sum().reset_index()
-        fig_pie = px.pie(df_nhom, values="Ton_Kho", names="Nhom_Hang", 
-                         title="Phân bổ tồn kho theo nhóm hàng", hole=0.4)
-        st.plotly_chart(fig_pie, use_container_width=True)
+with tab_auto_chart:
+    c_left, c_right = st.columns(2)
+    with c_left:
+        if not df.empty:
+            top10 = df.nlargest(10, "Ton_Kho")
+            fig_top10 = px.bar(top10, x="Ton_Kho", y="Ten_San_Pham", orientation="h",
+                               title="Top 10 Sản Phẩm Tồn Kho Nhiều Nhất", text_auto=True,
+                               color="Ton_Kho", color_continuous_scale="Blues")
+            fig_top10.update_layout(yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig_top10, use_container_width=True)
 
-with col_right:
-    st.subheader("⚠️ Top sản phẩm sắp hết (Dưới mức tối thiểu)")
-    df_low = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]].copy()
-    if df_low.empty:
-        df_low = df.nsmallest(5, "Ton_Kho").copy()
+    with c_right:
+        if "Nhom_Hang" in df.columns and not df.empty:
+            df_nhom = df.groupby("Nhom_Hang")["Ton_Kho"].sum().reset_index()
+            fig_pie = px.pie(df_nhom, values="Ton_Kho", names="Nhom_Hang", 
+                             title="Tỷ Lệ Tồn Kho Theo Nhóm Hàng", hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+with tab_custom_chart:
+    st.markdown("**Tự do vẽ biểu đồ phân tích theo từng tiêu chí:**")
+    col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
     
-    df_low_display = df_low.head(10)[["SKU", "Ten_San_Pham", "Ton_Kho", "Muc_Toi_Thieu"]].copy()
-    df_low_display.columns = ["Mã SKU", "Tên Sản Phẩm", "Tồn Kho", "Tối Thiểu"]
-    df_low_display["Tồn Kho"] = df_low_display["Tồn Kho"].astype(int)
-    df_low_display["Tối Thiểu"] = df_low_display["Tối Thiểu"].astype(int)
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = df.select_dtypes(include=['object']).columns.tolist()
 
-    st.dataframe(df_low_display, use_container_width=True, hide_index=True)
+    with col_sel1:
+        chart_type = st.selectbox("Loại biểu đồ", ["Cột (Bar)", "Đường (Line)", "Tròn (Pie)", "Khối (Treemap)", "Điểm (Scatter)"])
+    with col_sel2:
+        x_col = st.selectbox("Trục X (Danh mục)", cat_cols, index=1 if len(cat_cols) > 1 else 0)
+    with col_sel3:
+        y_col = st.selectbox("Trục Y (Giá trị số)", num_cols, index=0)
+    with col_sel4:
+        color_col = st.selectbox("Phân màu theo", [None] + cat_cols, index=0)
 
-    if "Khu_Vuc" in df.columns and not df.empty:
-        df_khu = df.groupby("Khu_Vuc")["Ton_Kho"].sum().reset_index()
-        fig_khu = px.bar(df_khu, x="Khu_Vuc", y="Ton_Kho", color="Khu_Vuc",
-                         title="Tồn kho theo từng khu vực/kho", text_auto=True)
-        st.plotly_chart(fig_khu, use_container_width=True)
+    if st.button("📊 Vẽ Biểu Đồ Tùy Chỉnh", use_container_width=True, type="secondary"):
+        if chart_type == "Cột (Bar)":
+            fig_custom = px.bar(df, x=x_col, y=y_col, color=color_col, title=f"Biểu đồ cột: {y_col} theo {x_col}", text_auto=True)
+        elif chart_type == "Đường (Line)":
+            fig_custom = px.line(df, x=x_col, y=y_col, color=color_col, title=f"Biểu đồ đường: {y_col} theo {x_col}")
+        elif chart_type == "Tròn (Pie)":
+            fig_custom = px.pie(df, values=y_col, names=x_col, title=f"Biểu đồ tròn: {y_col} theo {x_col}")
+        elif chart_type == "Khối (Treemap)":
+            fig_custom = px.treemap(df, path=[x_col], values=y_col, title=f"Biểu đồ khối Treemap: {y_col} theo {x_col}")
+        else:
+            fig_custom = px.scatter(df, x=x_col, y=y_col, color=color_col, title=f"Biểu đồ phân tán: {y_col} theo {x_col}")
+            
+        st.plotly_chart(fig_custom, use_container_width=True)
