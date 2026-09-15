@@ -27,69 +27,45 @@ if "df_data" not in st.session_state:
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
     st.session_state.df_data = df_init
 
-# --- 2. CSS CỐ ĐỊNH NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
+# --- 2. CSS CHUẨN CỐ ĐỊNH NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
 st.markdown("""
     <style>
-    /* Ghim cố định khung chứa nút AI luôn nổi trên góc dưới bên phải */
-    .ai-chat-float {
+    /* Định vị cố định nút popover chứa chữ "hỗ trợ" ở góc dưới bên phải */
+    div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]),
+    div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]),
+    div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) {
         position: fixed !important;
         bottom: 25px !important;
         right: 25px !important;
         z-index: 999999 !important;
+        width: auto !important;
     }
-    .ai-chat-float div[data-testid="stPopover"] > button {
+
+    /* Đổi kiểu dáng nút thành màu cam nổi bật giống mẫu */
+    div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button,
+    div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button,
+    div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button {
         background-color: #ff9800 !important;
         color: white !important;
         border: none !important;
         border-radius: 30px !important;
-        padding: 8px 18px !important;
+        padding: 10px 20px !important;
         box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
         font-weight: 600 !important;
         font-size: 15px !important;
-        display: flex !important;
-        align-items: center !important;
-        gap: 8px !important;
-        transition: transform 0.2s ease, background-color 0.2s ease;
+        transition: transform 0.2s ease, background-color 0.2s ease !important;
     }
-    .ai-chat-float div[data-testid="stPopover"] > button:hover {
+
+    div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button:hover,
+    div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button:hover,
+    div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button:hover {
         background-color: #e68a00 !important;
-        transform: scale(1.05);
+        transform: scale(1.05) !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. NÚT AI ĐẶT NGAY ĐẦU FILE (ĐỂ HIỂN THỊ NGAY KHI TẢI TRANG) ---
-st.markdown('<div class="ai-chat-float">', unsafe_allow_html=True)
-with st.popover("💬 Bạn cần hỗ trợ?"):
-    st.markdown("### 🤖 Trợ lý AI Kho Hàng")
-    st.caption("Giải đáp thông tin dữ liệu kho 24/7")
-    
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    chat_container = st.container(height=280)
-    with chat_container:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-    if prompt := st.chat_input("Nhập câu hỏi..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        with chat_container:
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            with st.chat_message("assistant"):
-                if not st.session_state.api_key:
-                    response = "⚠️ Vui lòng nhấp nút **⚙️ Cài đặt** ở góc trên bên phải để nhập API Key."
-                else:
-                    response = f"🤖 AI đang xử lý yêu cầu của bạn: '{prompt}'."
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-st.markdown('</div>', unsafe_allow_html=True)
-
-# --- 4. THANH TIÊU ĐỀ, ĐĂNG NHẬP VÀ CÀI ĐẶT ---
+# --- 3. THANH TIÊU ĐỀ, ĐĂNG NHẬP VÀ CÀI ĐẶT ---
 col_title, col_user, col_settings = st.columns([0.65, 0.2, 0.15])
 
 with col_title:
@@ -153,7 +129,7 @@ with col_settings:
             except Exception:
                 st.error("Lỗi đọc file.")
 
-# --- 5. DASHBOARD TỔNG QUAN ---
+# --- 4. DASHBOARD TỔNG QUAN ---
 df = st.session_state.df_data
 
 st.subheader("📊 Chỉ số KPI chính")
@@ -201,3 +177,8 @@ with col2:
         fig_wh = px.bar(by_warehouse, x="Khu_Vuc", y="Ton_Kho", title="Tồn kho theo từng khu vực/kho",
                         color="Khu_Vuc", text_auto=True)
         st.plotly_chart(fig_wh, use_container_width=True)
+
+# --- 5. NÚT AI HỎI ĐÁP (LUÔN CỐ ĐỊNH Ở GÓC DƯỚI BÊN PHẢI) ---
+with st.popover("💬 Bạn cần hỗ trợ?"):
+    st.markdown("### 🤖 Trợ lý AI Kho Hàng")
+    st.caption("Giải
