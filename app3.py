@@ -3,9 +3,39 @@ import pandas as pd
 import plotly.express as px
 import time
 
+# --- 1. THIẾT LẬP TRANG ---
 st.set_page_config(page_title="AI Kho Hàng", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 1. KHỞI TẠO SESSION STATE ---
+# --- 2. CSS NÚT AI CỐ ĐỊNH GÓC PHẢI ---
+custom_css = """
+<style>
+div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]),
+div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]),
+div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) {
+    position: fixed !important;
+    bottom: 25px !important;
+    right: 25px !important;
+    z-index: 999999 !important;
+    width: auto !important;
+}
+
+div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button,
+div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button,
+div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button {
+    background-color: #ff9800 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 30px !important;
+    padding: 10px 20px !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
+    font-weight: 600 !important;
+    font-size: 15px !important;
+}
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+
+# --- 3. KHỞI TẠO DỮ LIỆU ---
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "is_logged_in" not in st.session_state:
@@ -28,15 +58,11 @@ if "df_data" not in st.session_state:
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
     st.session_state.df_data = df_init
 
-# --- 2. HÀM PHÂN TÍCH DỮ LIỆU KHO CHO AI ---
+# --- 4. HÀM PHÂN TÍCH DỮ LIỆU KHO CHO AI ---
 def analyze_warehouse_data(query: str, df: pd.DataFrame) -> str:
     q = query.lower()
     
-    # 1. Hỏi về tồn kho cao nhất / sản phẩm tồn nhiều nhất
+    # Hỏi về mặt hàng tồn kho cao nhất
     if any(k in q for k in ["cao nhất", "nhiều nhất", "lớn nhất", "max"]):
         if "Ton_Kho" in df.columns and "Ten_San_Pham" in df.columns:
-            top_item = df.nlargest(1, "Ton_Kho").iloc[0]
-            sku = top_item.get("SKU", "N/A")
-            name = top_item["Ten_San_Pham"]
-            qty = top_item["Ton_Kho"]
-            cat = top_item.get("Nhom_Hang", "N/A")
+            top_item =
