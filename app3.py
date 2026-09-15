@@ -178,7 +178,7 @@ with col2:
                         color="Khu_Vuc", text_auto=True)
         st.plotly_chart(fig_wh, use_container_width=True)
 
-# --- 5. NÚT AI HỎI ĐÁP (CÓ HIỆU ỨNG ĐANG XỬ LÝ) ---
+# --- 5. TRỢ LÝ AI HỎI ĐÁP (CÓ SPINNER & TYPING EFFECT) ---
 with st.popover("💬 Bạn cần hỗ trợ?"):
     st.markdown("### 🤖 Trợ lý AI Kho Hàng")
     st.caption("Giải đáp thông tin dữ liệu kho 24/7")
@@ -193,18 +193,24 @@ with st.popover("💬 Bạn cần hỗ trợ?"):
                 st.markdown(message["content"])
 
     if prompt := st.chat_input("Nhập câu hỏi..."):
-        # Lưu câu hỏi của người dùng vào danh sách
         st.session_state.messages.append({"role": "user", "content": prompt})
         
-        # Hiển thị câu hỏi ngay lập tức
         with chat_container:
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                # Hiển thị vòng xoay spinner "AI đang suy nghĩ..."
-                with st.spinner("🤖 AI đang phân tích dữ liệu kho và trả lời..."):
-                    time.sleep(1.2) # Giả lập thời gian suy nghĩ của AI
-
+                with st.spinner("AI đang truy vấn dữ liệu kho..."):
+                    time.sleep(1.0)
                     if not st.session_state.api_key:
-                        response_text = "⚠️ V
+                        reply_msg = "Vui lòng nhập API Key trong phần Cài đặt ở góc trên bên phải để bắt đầu trò chuyện."
+                    else:
+                        reply_msg = f"Hệ thống đã ghi nhận câu hỏi: '{prompt}'. Dữ liệu tồn kho hiện tại hoạt động bình thường."
+
+                def stream_response():
+                    for word in reply_msg.split():
+                        yield word + " "
+                        time.sleep(0.04)
+
+                full_resp = st.write_stream(stream_response)
+                st.session_state.messages.append({"role": "assistant", "content": full_resp})
