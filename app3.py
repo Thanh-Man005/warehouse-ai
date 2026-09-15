@@ -27,15 +27,15 @@ if "df_data" not in st.session_state:
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
     st.session_state.df_data = df_init
 
-# --- 2. CSS TÙY CHỈNH NÚT AI "BẠN CẦN HỖ TRỢ?" GIỐNG MẪU ---
+# --- 2. CSS CỐ ĐỊNH NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
 st.markdown("""
     <style>
-    /* CSS cho nút AI góc dưới bên phải giống MobileCity */
+    /* Ghim cố định khung chứa nút AI luôn nổi trên góc dưới bên phải */
     .ai-chat-float {
-        position: fixed;
-        bottom: 25px;
-        right: 25px;
-        z-index: 999999;
+        position: fixed !important;
+        bottom: 25px !important;
+        right: 25px !important;
+        z-index: 999999 !important;
     }
     .ai-chat-float div[data-testid="stPopover"] > button {
         background-color: #ff9800 !important;
@@ -43,7 +43,7 @@ st.markdown("""
         border: none !important;
         border-radius: 30px !important;
         padding: 8px 18px !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.25) !important;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
         font-weight: 600 !important;
         font-size: 15px !important;
         display: flex !important;
@@ -58,7 +58,38 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. THANH TIÊU ĐỀ, ĐĂNG NHẬP VÀ CÀI ĐẶT ---
+# --- 3. NÚT AI ĐẶT NGAY ĐẦU FILE (ĐỂ HIỂN THỊ NGAY KHI TẢI TRANG) ---
+st.markdown('<div class="ai-chat-float">', unsafe_allow_html=True)
+with st.popover("💬 Bạn cần hỗ trợ?"):
+    st.markdown("### 🤖 Trợ lý AI Kho Hàng")
+    st.caption("Giải đáp thông tin dữ liệu kho 24/7")
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    chat_container = st.container(height=280)
+    with chat_container:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+    if prompt := st.chat_input("Nhập câu hỏi..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        with chat_container:
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                if not st.session_state.api_key:
+                    response = "⚠️ Vui lòng nhấp nút **⚙️ Cài đặt** ở góc trên bên phải để nhập API Key."
+                else:
+                    response = f"🤖 AI đang xử lý yêu cầu của bạn: '{prompt}'."
+                st.markdown(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+st.markdown('</div>', unsafe_allow_html=True)
+
+# --- 4. THANH TIÊU ĐỀ, ĐĂNG NHẬP VÀ CÀI ĐẶT ---
 col_title, col_user, col_settings = st.columns([0.65, 0.2, 0.15])
 
 with col_title:
@@ -122,7 +153,7 @@ with col_settings:
             except Exception:
                 st.error("Lỗi đọc file.")
 
-# --- 4. DASHBOARD TỔNG QUAN ---
+# --- 5. DASHBOARD TỔNG QUAN ---
 df = st.session_state.df_data
 
 st.subheader("📊 Chỉ số KPI chính")
@@ -170,34 +201,3 @@ with col2:
         fig_wh = px.bar(by_warehouse, x="Khu_Vuc", y="Ton_Kho", title="Tồn kho theo từng khu vực/kho",
                         color="Khu_Vuc", text_auto=True)
         st.plotly_chart(fig_wh, use_container_width=True)
-
-# --- 5. NÚT TRỢ LÝ AI "BẠN CẦN HỖ TRỢ?" Ở GÓC DƯỚI BÊN PHẢI ---
-st.markdown('<div class="ai-chat-float">', unsafe_allow_html=True)
-with st.popover("💬 Bạn cần hỗ trợ?"):
-    st.markdown("### 🤖 Trợ lý AI Kho Hàng")
-    st.caption("Giải đáp thông tin dữ liệu kho 24/7")
-    
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    chat_container = st.container(height=280)
-    with chat_container:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-    if prompt := st.chat_input("Nhập câu hỏi..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        with chat_container:
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            with st.chat_message("assistant"):
-                if not st.session_state.api_key:
-                    response = "⚠️ Vui lòng nhấp nút **⚙️ Cài đặt** ở góc trên bên phải để nhập API Key."
-                else:
-                    response = f"🤖 AI đang xử lý yêu cầu của bạn: '{prompt}'."
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-st.markdown('</div>', unsafe_allow_html=True)
