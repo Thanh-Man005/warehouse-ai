@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import time
 
 st.set_page_config(page_title="AI Kho Hàng", layout="wide", initial_sidebar_state="collapsed")
 
@@ -30,7 +31,6 @@ if "df_data" not in st.session_state:
 # --- 2. CSS CỐ ĐỊNH NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
 css_code = """
 <style>
-/* Đưa container chứa nút popover AI xuống cố định góc dưới bên phải */
 div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]),
 div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]),
 div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) {
@@ -41,7 +41,6 @@ div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ t
     width: auto !important;
 }
 
-/* Style cho nút AI nổi bật */
 div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button,
 div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button,
 div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button {
@@ -179,7 +178,7 @@ with col2:
                         color="Khu_Vuc", text_auto=True)
         st.plotly_chart(fig_wh, use_container_width=True)
 
-# --- 5. NÚT AI HỎI ĐÁP (CỐ ĐỊNH GÓC DƯỚI BÊN PHẢI) ---
+# --- 5. NÚT AI HỎI ĐÁP (CÓ HIỆU ỨNG ĐANG XỬ LÝ) ---
 with st.popover("💬 Bạn cần hỗ trợ?"):
     st.markdown("### 🤖 Trợ lý AI Kho Hàng")
     st.caption("Giải đáp thông tin dữ liệu kho 24/7")
@@ -194,16 +193,18 @@ with st.popover("💬 Bạn cần hỗ trợ?"):
                 st.markdown(message["content"])
 
     if prompt := st.chat_input("Nhập câu hỏi..."):
+        # Lưu câu hỏi của người dùng vào danh sách
         st.session_state.messages.append({"role": "user", "content": prompt})
         
+        # Hiển thị câu hỏi ngay lập tức
         with chat_container:
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                if not st.session_state.api_key:
-                    response = "⚠️ Vui lòng nhấp nút **⚙️ Cài đặt** ở góc trên bên phải để nhập API Key."
-                else:
-                    response = f"🤖 AI đang xử lý yêu cầu của bạn: '{prompt}'."
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                # Hiển thị vòng xoay spinner "AI đang suy nghĩ..."
+                with st.spinner("🤖 AI đang phân tích dữ liệu kho và trả lời..."):
+                    time.sleep(1.2) # Giả lập thời gian suy nghĩ của AI
+
+                    if not st.session_state.api_key:
+                        response_text = "⚠️ V
