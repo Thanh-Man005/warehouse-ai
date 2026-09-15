@@ -2,12 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Import logic nếu có dùng file logic.py riêng (nếu gộp file thì mã dưới tự chạy độc lập)
-try:
-    from logic import get_default_data, process_uploaded_file, calculate_kpis, generate_charts
-except ImportError:
-    pass
-
 st.set_page_config(page_title="AI Kho Hàng", layout="wide", initial_sidebar_state="collapsed")
 
 # --- 1. KHỞI TẠO BỘ NHỚ SESSION STATE ---
@@ -29,18 +23,15 @@ if "df_data" not in st.session_state:
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
     st.session_state.df_data = df_init
 
-# --- 2. CSS TÙY CHỈNH TẠO NÚT TRÒN AI Ở GÓC DƯỚI BÊN PHẢI ---
+# --- 2. CSS TÙY CHỈNH NÚT TRÒN AI Ở GÓC DƯỚI BÊN PHẢI ---
 st.markdown("""
     <style>
-    /* Cấu hình vị trí cố định ở góc dưới bên phải */
     div[data-testid="stPopover"] {
         position: fixed;
         bottom: 30px;
         right: 30px;
         z-index: 999999;
     }
-    
-    /* Thiết kế nút bấm thành hình tròn */
     div[data-testid="stPopover"] > button {
         width: 60px !important;
         height: 60px !important;
@@ -55,14 +46,10 @@ st.markdown("""
         font-size: 26px !important;
         transition: transform 0.2s ease-in-out;
     }
-    
-    /* Hiệu ứng phóng to nhẹ khi di chuột vào nút tròn */
     div[data-testid="stPopover"] > button:hover {
         transform: scale(1.1);
         background-color: #0056b3 !important;
     }
-
-    /* Tùy chỉnh cửa sổ chat bung ra */
     div[data-testid="stPopoverBody"] {
         width: 380px !important;
         max-height: 520px !important;
@@ -103,7 +90,7 @@ with col_settings:
                     df_new = pd.read_csv(uploaded_file)
                 else:
                     df_new = pd.read_excel(uploaded_file)
-                if "Gia_Tri_Ton" not in df_new.columns and "Ton_Kho" in df_new and "Gia_Nhap" in df_new:
+                if "Gia_Tri_Ton" not in df_new.columns and "Ton_Kho" in df_new.columns and "Gia_Nhap" in df_new.columns:
                     df_new["Gia_Tri_Ton"] = df_new["Ton_Kho"] * df_new["Gia_Nhap"]
                 st.session_state.df_data = df_new
                 st.success("Đã lưu dữ liệu mới!")
@@ -116,12 +103,13 @@ df = st.session_state.df_data
 st.subheader("📊 Chỉ số KPI chính")
 kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
 
-tong_sku = df["SKU"].nunique() if "SKU" in df else len(df)
-tong_ton = df["Ton_Kho"].sum() if "Ton_Kho" in df else 0
-nhap_thang = df["Nhap_Thang"].sum() if "Nhap_Thang" in df else 0
-xuat_thang = df["Xuat_Thang"].sum() if "Xuat_Thang" in df else 0
-sku_canh_bao = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]]["SKU"].count() if ("Muc_Toi_Thieu" in df and "Ton_Kho" in df) else 0
-gia_tri_ton = df["Gia_Tri_Ton"].sum() if "Gia_Tri_Ton" in df else 0
+# Sửa lỗi kiểm tra cột chuẩn cú pháp Pandas
+tong_sku = df["SKU"].nunique() if "SKU" in df.columns else len(df)
+tong_ton = df["Ton_Kho"].sum() if "Ton_Kho" in df.columns else 0
+nhap_thang = df["Nhap_Thang"].sum() if "Nhap_Thang" in df.columns else 0
+xuat_thang = df["Xuat_Thang"].sum() if "Xuat_Thang" in df.columns else 0
+sku_canh_bao = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]]["SKU"].count() if ("Muc_Toi_Thieu" in df.columns and "Ton_Kho" in df.columns) else 0
+gia_tri_ton = df["Gia_Tri_Ton"].sum() if "Gia_Tri_Ton" in df.columns else 0
 
 kpi1.metric("📦 Tổng SKU", f"{tong_sku:,}")
 kpi2.metric("📊 Tổng tồn kho", f"{tong_ton:,}")
@@ -134,7 +122,7 @@ st.markdown("---")
 
 col1, col2 = st.columns(2)
 with col1:
-    if "Ton_Kho" in df and "Ten_San_Pham" in df:
+    if "Ton_Kho" in df.columns and "Ten_San_Pham" in df.columns:
         top_10 = df.nlargest(10, "Ton_Kho")
         fig_top10 = px.bar(top_10, x="Ton_Kho", y="Ten_San_Pham", orientation="h",
                            title="Top 10 sản phẩm tồn nhiều nhất", text_auto=True,
@@ -142,40 +130,37 @@ with col1:
         fig_top10.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig_top10, use_container_width=True)
 
-    if "Nhom_Hang" in df and "Ton_Kho" in df:
+    if "Nhom_Hang" in df.columns and "Ton_Kho" in df.columns:
         by_cat = df.groupby("Nhom_Hang")["Ton_Kho"].sum().reset_index()
         fig_cat = px.pie(by_cat, values="Ton_Kho", names="Nhom_Hang", title="Phân bố tồn kho theo nhóm hàng", hole=0.4)
         st.plotly_chart(fig_cat, use_container_width=True)
 
 with col2:
-    if "Muc_Toi_Thieu" in df and "Ton_Kho" in df:
+    if "Muc_Toi_Thieu" in df.columns and "Ton_Kho" in df.columns:
         sap_het = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]].sort_values("Ton_Kho")
         st.write("⚠️ **Top sản phẩm sắp hết (Dưới mức tối thiểu)**")
         st.dataframe(sap_het[["SKU", "Ten_San_Pham", "Ton_Kho", "Muc_Toi_Thieu"]], use_container_width=True)
 
-    if "Khu_Vuc" in df and "Ton_Kho" in df:
+    if "Khu_Vuc" in df.columns and "Ton_Kho" in df.columns:
         by_warehouse = df.groupby("Khu_Vuc")["Ton_Kho"].sum().reset_index()
         fig_wh = px.bar(by_warehouse, x="Khu_Vuc", y="Ton_Kho", title="Tồn kho theo từng khu vực/kho",
                         color="Khu_Vuc", text_auto=True)
         st.plotly_chart(fig_wh, use_container_width=True)
 
-# --- 5. BONG BÓNG TRỢ LÝ AI (NÚT TRÒN FLOATING Ở GÓC DƯỚI BÊN PHẢI) ---
+# --- 5. BONG BÓNG TRỢ LÝ AI (NÚT TRÒN FLOATING GÓC DƯỚI BÊN PHẢI) ---
 with st.popover("🤖"):
     st.markdown("### 🤖 Trợ lý AI Kho Hàng")
     st.caption("Truy vấn thông tin kho nhanh chóng")
     
-    # Khởi tạo lịch sử chat
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Container hiển thị nội dung trò chuyện
     chat_container = st.container(height=280)
     with chat_container:
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-    # Ô nhập câu hỏi ngay dưới khung chat
     if prompt := st.chat_input("Hỏi AI..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         
