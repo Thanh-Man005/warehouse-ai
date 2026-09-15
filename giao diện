@@ -2,17 +2,24 @@ import streamlit as st
 import pandas as pd
 from logic import get_default_data, process_uploaded_file, calculate_kpis, generate_charts
 
-st.set_page_config(page_title="AI Kho Hàng", layout="wide")
+# Cấu hình trang & ẩn thanh sidebar mặc định
+st.set_page_config(page_title="AI Kho Hàng", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 1. KHỞI TẠO DỮ LIỆU BAN ĐẦU ---
+# --- 1. KHỞI TẠO BỘ NHỚ SESSSION ---
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "df_data" not in st.session_state:
     st.session_state.df_data = get_default_data()
 
-# --- 2. CÀI ĐẶT ẨN TRONG BÁNH RĂNG (POPOVER) ---
-with st.sidebar:
-    with st.popover("⚙️ Cài đặt & Dữ liệu", use_container_width=True):
+# --- 2. THANH TIÊU ĐỀ & NÚT CÀI ĐẶT Ở GÓC TRÊN BÊN PHẢI ---
+col_title, col_settings = st.columns([0.82, 0.18])
+
+with col_title:
+    st.title("📦 AI Kho Hàng")
+
+with col_settings:
+    st.write("") # Căn lề trên
+    with st.popover("⚙️ Cài đặt", use_container_width=True):
         st.subheader("🛠️ Cấu hình hệ thống")
         
         # Nhập API Key
@@ -34,22 +41,17 @@ with st.sidebar:
             df_new, err = process_uploaded_file(uploaded_file)
             if df_new is not None:
                 st.session_state.df_data = df_new
-                st.success("Đã tải và lưu dữ liệu mới!")
+                st.success("Đã lưu dữ liệu mới!")
             else:
                 st.error(err)
 
-    if st.session_state.api_key:
-        st.caption("✅ Đã kết nối API Key")
-
-# --- 3. GIAO DIỆN CHÍNH ---
+# --- 3. GIAO DIỆN CHÍNH (TABS) ---
 tab_dashboard, tab_chat = st.tabs(["📊 Dashboard Tổng Quan", "🤖 Hỏi đáp với AI"])
 
 df = st.session_state.df_data
 
 # --- TAB 1: DASHBOARD TỔNG QUAN ---
 with tab_dashboard:
-    st.title("📦 Dashboard Tổng Quan Kho")
-    
     # Hiển thị KPI
     kpis = calculate_kpis(df)
     st.subheader("📊 Chỉ số KPI chính")
@@ -99,7 +101,7 @@ with tab_chat:
 
         with st.chat_message("assistant"):
             if not st.session_state.api_key:
-                response = "⚠️ Vui lòng ấn vào nút **⚙️ Cài đặt & Dữ liệu** để nhập API Key trước khi sử dụng AI."
+                response = "⚠️ Vui lòng nhấp vào nút **⚙️ Cài đặt** ở góc trên bên phải để nhập API Key trước khi sử dụng AI."
             else:
                 response = f"🤖 AI đang sử dụng API Key đã lưu để phân tích câu hỏi: '{prompt}'."
             st.markdown(response)
