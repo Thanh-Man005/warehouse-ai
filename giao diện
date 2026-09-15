@@ -1,0 +1,106 @@
+import streamlit as st
+import pandas as pd
+from logic import get_default_data, process_uploaded_file, calculate_kpis, generate_charts
+
+st.set_page_config(page_title="AI Kho Hàng", layout="wide")
+
+# --- 1. KHỞI TẠO DỮ LIỆU BAN ĐẦU ---
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
+if "df_data" not in st.session_state:
+    st.session_state.df_data = get_default_data()
+
+# --- 2. CÀI ĐẶT ẨN TRONG BÁNH RĂNG (POPOVER) ---
+with st.sidebar:
+    with st.popover("⚙️ Cài đặt & Dữ liệu", use_container_width=True):
+        st.subheader("🛠️ Cấu hình hệ thống")
+        
+        # Nhập API Key
+        input_key = st.text_input(
+            "🔑 Nhập API Key", 
+            value=st.session_state.api_key, 
+            type="password"
+        )
+        if input_key != st.session_state.api_key:
+            st.session_state.api_key = input_key
+            st.success("Đã cập nhật API Key!")
+
+        st.markdown("---")
+        st.subheader("📁 Tải tài liệu kho")
+        
+        # Upload file
+        uploaded_file = st.file_uploader("Tải file Excel/CSV mới", type=["xlsx", "xls", "csv"])
+        if uploaded_file is not None:
+            df_new, err = process_uploaded_file(uploaded_file)
+            if df_new is not None:
+                st.session_state.df_data = df_new
+                st.success("Đã tải và lưu dữ liệu mới!")
+            else:
+                st.error(err)
+
+    if st.session_state.api_key:
+        st.caption("✅ Đã kết nối API Key")
+
+# --- 3. GIAO DIỆN CHÍNH ---
+tab_dashboard, tab_chat = st.tabs(["📊 Dashboard Tổng Quan", "🤖 Hỏi đáp với AI"])
+
+df = st.session_state.df_data
+
+# --- TAB 1: DASHBOARD TỔNG QUAN ---
+with tab_dashboard:
+    st.title("📦 Dashboard Tổng Quan Kho")
+    
+    # Hiển thị KPI
+    kpis = calculate_kpis(df)
+    st.subheader("📊 Chỉ số KPI chính")
+    kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
+
+    kpi1.metric("📦 Tổng SKU", f"{kpis['tong_sku']:,}")
+    kpi2.metric("📊 Tổng tồn kho", f"{kpis['tong_ton']:,}")
+    kpi3.metric("⬆️ Nhập trong tháng", f"{kpis['nhap_thang']:,}")
+    kpi4.metric("⬇️ Xuất trong tháng", f"{kpis['xuat_thang']:,}")
+    kpi5.metric("🔴 SKU dưới tối thiểu", f"{kpis['sku_canh_bao']:,}")
+    kpi6.metric("💰 Giá trị tồn kho", f"{kpis['gia_tri_ton']:,.0f} VNĐ")
+
+    st.markdown("---")
+
+    # Hiển thị Biểu đồ
+    fig_top10, fig_cat, sap_het, fig_wh = generate_charts(df)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if fig_top10:
+            st.plotly_chart(fig_top10, use_container_width=True)
+        if fig_cat:
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+    with col2:
+        if sap_het is not None:
+            st.write("⚠️ **Top sản phẩm sắp hết (Dưới mức tối thiểu)**")
+            st.dataframe(sap_het[["SKU", "Ten_San_Pham", "Ton_Kho", "Muc_Toi_Thieu"]], use_container_width=True)
+        if fig_wh:
+            st.plotly_chart(fig_wh, use_container_width=True)
+
+# --- TAB 2: CHAT AI ---
+with tab_chat:
+    st.title("🤖 Trợ lý AI Quản Lý Kho")
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Hỏi AI về dữ liệu kho..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            if not st.session_state.api_key:
+                response = "⚠️ Vui lòng ấn vào nút **⚙️ Cài đặt & Dữ liệu** để nhập API Key trước khi sử dụng AI."
+            else:
+                response = f"🤖 AI đang sử dụng API Key đã lưu để phân tích câu hỏi: '{prompt}'."
+            st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
