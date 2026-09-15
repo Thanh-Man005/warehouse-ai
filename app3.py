@@ -42,17 +42,61 @@ if "is_logged_in" not in st.session_state:
     st.session_state.is_logged_in = False
 if "username" not in st.session_state:
     st.session_state.username = ""
+
+def clean_and_process_df(df_raw):
+    """Hàm chuẩn hóa dữ liệu kho từ file Excel thực tế"""
+    df = df_raw.copy()
+    
+    # Chuẩn hóa tên cột
+    cols = [str(c).strip() for c in df.columns]
+    df.columns = cols
+    
+    # Tìm cột Mã VT, Tên vật tư, Tồn cuối kỳ
+    col_ma = next((c for c in df.columns if "mã vt" in c.lower() or "sku" in c.lower()), "Mã VT")
+    col_ten = next((c for c in df.columns if "tên vật tư" in c.lower() or "tên sản phẩm" in c.lower()), "Tên vật tư")
+    
+    # Lấy cột số lượng tồn cuối
+    col_ton = None
+    for c in df.columns:
+        if "tồn cuối" in c.lower() or "tồn kho" in c.lower():
+            if "số lượng" in str(df[c].iloc[0]).lower() or "số lượng" in c.lower() or col_ton is None:
+                col_ton = c
+    if not col_ton:
+        col_ton = "Tồn kho"
+
+    # Lọc bỏ dòng tiêu đề phụ/tổng cộng
+    df = df.dropna(subset=[col_ten])
+    df = df[~df[col_ten].astype(str).str.contains("Tổng cộng|Tên vật tư|STT", case=False, na=False)]
+    
+    # Đổi tên cột chuẩn
+    rename_dict = {}
+    if col_ma in df.columns: rename_dict[col_ma] = "SKU"
+    if col_ten in df.columns: rename_dict[col_ten] = "Ten_San_Pham"
+    if col_ton in df.columns: rename_dict[col_ton] = "Ton_Kho"
+    
+    df = df.rename(columns=rename_dict)
+    
+    # Chuyển Tồn kho sang dạng số
+    if "Ton_Kho" in df.columns:
+        df["Ton_Kho"] = pd.to_numeric(df["Ton_Kho"], errors="coerce").fillna(0)
+    else:
+        df["Ton_Kho"] = 0
+        
+    if "SKU" not in df.columns:
+        df["SKU"] = df["Ten_San_Pham"]
+        
+    return df
+
 if "df_data" not in st.session_state:
+    # Mẫu mặc định
     data = {
-        "SKU": [f"SKU{i:03d}" for i in range(1, 21)],
-        "Ten_San_Pham": [f"Sản phẩm {i}" for i in range(1, 21)],
-        "Nhom_Hang": ["Thực phẩm", "Đồ điện tử", "Gia dụng", "Thực phẩm", "Đồ điện tử"] * 4,
-        "Khu_Vuc": ["Kho A", "Kho B", "Kho C", "Kho A"] * 5,
-        "Ton_Kho": [120, 5, 450, 8, 300, 15, 600, 0, 90, 210, 150, 4, 80, 500, 320, 2, 110, 240, 180, 95],
-        "Muc_Toi_Thieu": [10] * 20,
-        "Gia_Nhap": [50, 150, 20, 200, 100, 80, 30, 120, 60, 90, 110, 250, 40, 15, 70, 300, 85, 45, 65, 130],
-        "Nhap_Thang": [50, 20, 100, 0, 50, 10, 200, 0, 30, 80, 40, 0, 20, 150, 100, 0, 30, 60, 50, 40],
-        "Xuat_Thang": [30, 15, 80, 5, 40, 12, 150, 2, 20, 50, 30, 1, 15, 100, 80, 1, 25, 40, 30, 20]
+        "SKU": ["BXS 100", "BXS 120", "QHKR3000", "Satla", "Thephop"],
+        "Ten_San_Pham": ["Bánh xe sắt 100", "Bánh xe sắt 120", "Que hàn KR3000 - 3.2x350", "Sắt la các loại", "Thép hộp các loại"],
+        "Nhom_Hang": ["Vật tư", "Vật tư", "Que hàn", "Sắt thép", "Sắt thép"],
+        "Khu_Vuc": ["Kho A", "Kho A", "Kho B", "Kho C", "Kho C"],
+        "Ton_Kho": [992, 4, 304, 260, 747],
+        "Muc_Toi_Thieu": [10, 5, 50, 50, 100],
+        "Gia_Nhap": [16835, 75000, 28259, 14001, 15832]
     }
     df_init = pd.DataFrame(data)
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
@@ -62,57 +106,67 @@ if "df_data" not in st.session_state:
 def analyze_warehouse_data(query: str, df: pd.DataFrame) -> str:
     q = query.lower()
     
+    if df.empty:
+        return "⚠️ Chưa có dữ liệu kho hàng. Vui lòng tải file dữ liệu lên trong mục Cài đặt."
+    
     # Hỏi về mặt hàng tồn kho cao nhất
     if any(k in q for k in ["cao nhất", "nhiều nhất", "lớn nhất", "max"]):
-        if "Ton_Kho" in df.columns and "Ten_San_Pham" in df.columns:
-            top_item = df.nlargest(1, "Ton_Kho").iloc[0]
-            sku = top_item.get("SKU", "N/A")
-            name = top_item["Ten_San_Pham"]
-            qty = top_item["Ton_Kho"]
-            cat = top_item.get("Nhom_Hang", "N/A")
-            loc = top_item.get("Khu_Vuc", "N/A")
-            return (
-                f"📦 **Mặt hàng tồn kho cao nhất hiện tại:**\n\n"
-                f"- **Tên sản phẩm:** {name} (Mã SKU: `{sku}`)\n"
-                f"- **Nhóm hàng:** {cat} | **Vị trí:** {loc}\n"
-                f"- **Số lượng tồn kho:** **{qty:,}** đơn vị.\n\n"
-                f"💡 **Đề xuất:** Mặt hàng này có lượng tồn dư dả, **hiện chưa cần nhập thêm**. "
-                f"Nên đẩy mạnh bán hàng/khuyến mãi để giải phóng bớt mặt bằng kho."
-            )
+        top_item = df.nlargest(1, "Ton_Kho").iloc[0]
+        sku = top_item.get("SKU", "N/A")
+        name = top_item.get("Ten_San_Pham", "N/A")
+        qty = top_item.get("Ton_Kho", 0)
+        return (
+            f"📦 **Mặt hàng tồn kho cao nhất hiện tại:**\n\n"
+            f"- **Tên vật tư:** {name}\n"
+            f"- **Mã VT:** `{sku}`\n"
+            f"- **Số lượng tồn kho:** **{int(qty):,}** đơn vị.\n\n"
+            f"💡 **Đề xuất:** Lượng tồn dồi dào, hiện chưa cần ưu tiên nhập thêm mặt hàng này."
+        )
 
     # Hỏi về sản phẩm sắp hết / cần nhập thêm
     if any(k in q for k in ["sắp hết", "thấp nhất", "bổ sung", "cảnh báo", "tối thiểu", "hết hàng", "cần nhập"]):
-        if "Ton_Kho" in df.columns and "Muc_Toi_Thieu" in df.columns:
+        if "Muc_Toi_Thieu" in df.columns:
             low_stock = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]].sort_values("Ton_Kho")
-            if len(low_stock) > 0:
-                res = f"⚠️ **Có {len(low_stock)} sản phẩm đang ở dưới mức tối thiểu cần bổ sung ngay:**\n\n"
-                for _, row in low_stock.head(5).iterrows():
-                    res += f"- **{row['Ten_San_Pham']}** (`{row['SKU']}`): Tồn **{row['Ton_Kho']}** (Tối thiểu: {row['Muc_Toi_Thieu']})\n"
-                res += "\n📌 **Khuyến nghị:** Cần lập đơn nhập hàng bổ sung ngay."
-                return res
-            else:
-                return "✅ Tất cả các mặt hàng hiện tại đều ở mức tồn kho an toàn."
+        else:
+            low_stock = df.nsmallest(5, "Ton_Kho")
+            
+        if len(low_stock) > 0:
+            res = f"⚠️ **Các sản phẩm có lượng tồn kho thấp nhất cần lưu ý:**\n\n"
+            for _, row in low_stock.head(5).iterrows():
+                res += f"- **{row['Ten_San_Pham']}** (Mã: `{row['SKU']}`): Tồn **{int(row['Ton_Kho']):,}**\n"
+            res += "\n📌 **Khuyến nghị:** Lập kế hoạch kiểm tra kho và nhập bổ sung."
+            return res
 
     # Hỏi về tổng quan kho
-    if any(k in q for k in ["tổng tồn", "tổng số", "tổng giá trị", "bao nhiêu sku"]):
+    if any(k in q for k in ["tổng tồn", "tổng số", "tổng giá trị", "bao nhiêu", "tổng quan"]):
         tong_sku = len(df)
-        tong_ton = df["Ton_Kho"].sum() if "Ton_Kho" in df.columns else 0
+        tong_ton = df["Ton_Kho"].sum()
         gia_tri = df["Gia_Tri_Ton"].sum() if "Gia_Tri_Ton" in df.columns else 0
         return (
             f"📊 **Báo cáo tổng quan kho hàng:**\n\n"
-            f"- **Tổng số SKU:** {tong_sku:,} mặt hàng\n"
-            f"- **Tổng số lượng tồn kho:** {tong_ton:,} sản phẩm\n"
+            f"- **Tổng số mặt hàng (SKU):** {tong_sku:,} vật tư\n"
+            f"- **Tổng số lượng tồn kho:** {int(tong_ton):,} sản phẩm\n"
             f"- **Tổng giá trị vốn tồn kho:** {gia_tri:,.0f} VNĐ"
+        )
+
+    # Tìm kiếm tên vật tư cụ thể
+    matched = df[df["Ten_San_Pham"].astype(str).str.lower().str.contains(q)]
+    if not matched.empty:
+        item = matched.iloc[0]
+        return (
+            f"🔍 **Thông tin vật tư tìm thấy:**\n\n"
+            f"- **Tên vật tư:** {item['Ten_San_Pham']}\n"
+            f"- **Mã VT:** `{item['SKU']}`\n"
+            f"- **Tồn kho hiện tại:** **{int(item['Ton_Kho']):,}** đơn vị"
         )
 
     # Phản hồi mặc định
     top_3 = df.nlargest(3, "Ton_Kho")[["Ten_San_Pham", "Ton_Kho"]].to_dict('records')
-    top_str = ", ".join([f"{item['Ten_San_Pham']} ({item['Ton_Kho']} sp)" for item in top_3])
+    top_str = ", ".join([f"{item['Ten_San_Pham']} ({int(item['Ton_Kho'])} sp)" for item in top_3])
     return (
         f"🤖 **Thông tin kho hàng hiện tại:**\n\n"
-        f"- Top 3 sản phẩm tồn nhiều nhất: **{top_str}**.\n"
-        f"- Số mặt hàng cần nhập thêm: **{len(df[df['Ton_Kho'] <= df['Muc_Toi_Thieu']])}** sản phẩm.\n"
-        f"Bạn có thể đặt câu hỏi như: *'tồn kho cao nhất'*, *'sản phẩm sắp hết'*, hoặc *'tổng giá trị kho'*."
+        f"- Top 3 vật tư tồn nhiều nhất: **{top_str}**.\n"
+        f"Bạn có thể hỏi: *'tồn kho cao nhất'*, *'sản phẩm sắp hết'*, hoặc tên vật tư cụ thể (vd: *'bánh xe'*, *'que hàn'*)."
     )
 
 # --- 5. THANH TIÊU ĐỀ & MENU BÊN TRÊN ---
@@ -161,39 +215,37 @@ with col_settings:
 
         st.markdown("---")
         st.subheader("📁 Tải tài liệu kho")
-        uploaded_file = st.file_uploader("Tải file Excel/CSV", type=["xlsx", "xls", "csv"])
+        uploaded_file = st.file_uploader("Tải file Excel/CSV kho hàng", type=["xlsx", "xls", "csv"])
         if uploaded_file is not None:
             try:
                 if uploaded_file.name.endswith('.csv'):
-                    df_new = pd.read_csv(uploaded_file)
+                    df_raw = pd.read_csv(uploaded_file, header=6)
                 else:
-                    df_new = pd.read_excel(uploaded_file)
-                if "Gia_Tri_Ton" not in df_new.columns and "Ton_Kho" in df_new.columns and "Gia_Nhap" in df_new.columns:
-                    df_new["Gia_Tri_Ton"] = df_new["Ton_Kho"] * df_new["Gia_Nhap"]
-                st.session_state.df_data = df_new
-                st.success("Tải dữ liệu thành công!")
-            except Exception:
-                st.error("Không thể đọc file.")
+                    # Tự động đọc đúng sheet 'Tong hop' nếu có
+                    xls = pd.ExcelFile(uploaded_file)
+                    sheet_name = "Tong hop" if "Tong hop" in xls.sheet_names else xls.sheet_names[0]
+                    df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=6)
+                
+                df_processed = clean_and_process_df(df_raw)
+                st.session_state.df_data = df_processed
+                st.success(f"Tải thành công! Đã xử lý {len(df_processed)} vật tư.")
+            except Exception as e:
+                st.error(f"Không thể đọc file: {e}")
 
 # --- 6. KHU VỰC DASHBOARD METRICS & CHARTS ---
 df = st.session_state.df_data
 
 st.subheader("📊 Chỉ số KPI chính")
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1, k2, k3, k4 = st.columns(4)
 
-tong_sku = df["SKU"].nunique() if "SKU" in df.columns else len(df)
+tong_sku = len(df)
 tong_ton = df["Ton_Kho"].sum() if "Ton_Kho" in df.columns else 0
-nhap_thang = df["Nhap_Thang"].sum() if "Nhap_Thang" in df.columns else 0
-xuat_thang = df["Xuat_Thang"].sum() if "Xuat_Thang" in df.columns else 0
-sku_canh_bao = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]]["SKU"].count() if ("Muc_Toi_Thieu" in df.columns and "Ton_Kho" in df.columns) else 0
 gia_tri_ton = df["Gia_Tri_Ton"].sum() if "Gia_Tri_Ton" in df.columns else 0
 
-k1.metric("📦 Tổng SKU", f"{tong_sku:,}")
-k2.metric("📊 Tổng tồn kho", f"{tong_ton:,}")
-k3.metric("⬆️ Nhập trong tháng", f"{nhap_thang:,}")
-k4.metric("⬇️ Xuất trong tháng", f"{xuat_thang:,}")
-k5.metric("🔴 SKU dưới tối thiểu", f"{sku_canh_bao:,}")
-k6.metric("💰 Giá trị tồn kho", f"{gia_tri_ton:,.0f} VNĐ")
+k1.metric("📦 Tổng số SKU", f"{tong_sku:,}")
+k2.metric("📊 Tổng tồn kho (Số lượng)", f"{int(tong_ton):,}")
+k3.metric("💰 Giá trị tồn kho", f"{gia_tri_ton:,.0f} VNĐ")
+k4.metric("🔴 Vật tư cần chú ý", f"{len(df[df['Ton_Kho'] <= 10]):,}")
 
 st.markdown("---")
 
@@ -202,26 +254,46 @@ with col_left:
     if "Ton_Kho" in df.columns and "Ten_San_Pham" in df.columns:
         top_10 = df.nlargest(10, "Ton_Kho")
         fig_top10 = px.bar(top_10, x="Ton_Kho", y="Ten_San_Pham", orientation="h",
-                           title="Top 10 sản phẩm tồn nhiều nhất", text_auto=True,
+                           title="Top 10 vật tư tồn kho nhiều nhất", text_auto=True,
                            color="Ton_Kho", color_continuous_scale="Blues")
         fig_top10.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig_top10, use_container_width=True)
 
-    if "Nhom_Hang" in df.columns and "Ton_Kho" in df.columns:
-        by_cat = df.groupby("Nhom_Hang")["Ton_Kho"].sum().reset_index()
-        fig_cat = px.pie(by_cat, values="Ton_Kho", names="Nhom_Hang", title="Phân bố tồn kho theo nhóm hàng", hole=0.4)
-        st.plotly_chart(fig_cat, use_container_width=True)
-
 with col_right:
-    if "Muc_Toi_Thieu" in df.columns and "Ton_Kho" in df.columns:
-        sap_het = df[df["Ton_Kho"] <= df["Muc_Toi_Thieu"]].sort_values("Ton_Kho")
-        st.write("⚠️ **Top sản phẩm sắp hết (Dưới mức tối thiểu)**")
-        st.dataframe(sap_het[["SKU", "Ten_San_Pham", "Ton_Kho", "Muc_Toi_Thieu"]], use_container_width=True)
+    st.write("📋 **Danh sách vật tư kho**")
+    cols_to_show = [c for c in ["SKU", "Ten_San_Pham", "Ton_Kho", "Gia_Tri_Ton"] if c in df.columns]
+    st.dataframe(df[cols_to_show].head(10), use_container_width=True)
 
-    if "Khu_Vuc" in df.columns and "Ton_Kho" in df.columns:
-        by_warehouse = df.groupby("Khu_Vuc")["Ton_Kho"].sum().reset_index()
-        fig_wh = px.bar(by_warehouse, x="Khu_Vuc", y="Ton_Kho", title="Tồn kho theo từng khu vực/kho",
-                        color="Khu_Vuc", text_auto=True)
-        st.plotly_chart(fig_wh, use_container_width=True)
+# --- 7. TRỢ LÝ AI HỎI ĐÁP NỔI ---
+with st.popover("💬 Bạn cần hỗ trợ?"):
+    st.markdown("### 🤖 Trợ lý AI Kho Hàng")
+    st.caption("Giải đáp thông tin dữ liệu kho 24/7")
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-# ---
+    chat_box = st.container(height=300)
+    with chat_box:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Nhập câu hỏi kho hàng..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        with chat_box:
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                with st.spinner("AI đang tra cứu dữ liệu..."):
+                    time.sleep(0.3)
+                    reply_msg = analyze_warehouse_data(prompt, st.session_state.df_data)
+
+                def stream_response():
+                    for word in reply_msg.split(" "):
+                        yield word + " "
+                        time.sleep(0.02)
+
+                full_resp = st.write_stream(stream_response)
+                st.session_state.messages.append({"role": "assistant", "content": full_resp})
