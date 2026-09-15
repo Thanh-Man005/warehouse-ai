@@ -27,30 +27,54 @@ if "df_data" not in st.session_state:
     df_init["Gia_Tri_Ton"] = df_init["Ton_Kho"] * df_init["Gia_Nhap"]
     st.session_state.df_data = df_init
 
-# --- 2. CSS ÉP NÚT AI CỐ ĐỊNH Ở GÓC DƯỚI BÊN PHẢI ---
-st.markdown("""
-    <style>
-    /* Ghim phần container của nút AI cố định góc phải bên dưới màn hình */
-    div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]),
-    div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]),
-    div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) {
-        position: fixed !important;
-        bottom: 25px !important;
-        right: 25px !important;
-        z-index: 999999 !important;
-        width: auto !important;
-    }
+# --- 2. CSS CỐ ĐỊNH NÚT AI Ở GÓC DƯỚI BÊN PHẢI ---
+css_code = """
+<style>
+div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]),
+div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]),
+div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) {
+    position: fixed !important;
+    bottom: 25px !important;
+    right: 25px !important;
+    z-index: 999999 !important;
+    width: auto !important;
+}
 
-    /* Tạo style màu cam nổi bật cho nút AI giống MobileCity */
-    div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button,
-    div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button,
-    div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button {
-        background-color: #ff9800 !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 30px !important;
-        padding: 10px 20px !important;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
-        font-weight: 600 !important;
-        font-size: 15px !important;
-        transition: transform 0.2s ease, background-color
+div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button,
+div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button,
+div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button {
+    background-color: #ff9800 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 30px !important;
+    padding: 10px 20px !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
+    font-weight: 600 !important;
+    font-size: 15px !important;
+    transition: transform 0.2s ease, background-color 0.2s ease !important;
+}
+
+div[data-testid="stElementContainer"]:has(button[aria-label*="hỗ trợ"]) button:hover,
+div[data-testid="stElementContainer"]:has(button[aria-label*="Hỗ trợ"]) button:hover,
+div[data-testid="stElementContainer"]:has(button[aria-label*="Bạn cần hỗ trợ"]) button:hover {
+    background-color: #e68a00 !important;
+    transform: scale(1.05) !important;
+}
+</style>
+"""
+st.markdown(css_code, unsafe_allow_html=True)
+
+# --- 3. THANH TIÊU ĐỀ, ĐĂNG NHẬP VÀ CÀI ĐẶT ---
+col_title, col_user, col_settings = st.columns([0.65, 0.2, 0.15])
+
+with col_title:
+    st.title("📦 AI Kho Hàng")
+
+with col_user:
+    st.write("")
+    if not st.session_state.is_logged_in:
+        with st.popover("👤 Đăng nhập", use_container_width=True):
+            tab_login, tab_register = st.tabs(["Đăng nhập", "Đăng ký"])
+            
+            with tab_login:
+                user_input
