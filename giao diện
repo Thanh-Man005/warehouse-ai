@@ -2,23 +2,23 @@ import streamlit as st
 import pandas as pd
 from logic import get_default_data, process_uploaded_file, calculate_kpis, generate_charts
 
-# Cấu hình trang & ẩn thanh sidebar mặc định
+# Cấu hình trang & ẩn thanh sidebar mặc định nếu muốn
 st.set_page_config(page_title="AI Kho Hàng", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 1. KHỞI TẠO BỘ NHỚ SESSSION ---
+# --- 1. KHỞI TẠO DỮ LIỆU BAN ĐẦU ---
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "df_data" not in st.session_state:
     st.session_state.df_data = get_default_data()
 
 # --- 2. THANH TIÊU ĐỀ & NÚT CÀI ĐẶT Ở GÓC TRÊN BÊN PHẢI ---
-col_title, col_settings = st.columns([0.82, 0.18])
+col_title, col_settings = st.columns([0.85, 0.15])
 
 with col_title:
     st.title("📦 AI Kho Hàng")
 
 with col_settings:
-    st.write("") # Căn lề trên
+    st.write("") # Tạo khoảng trống căn lề
     with st.popover("⚙️ Cài đặt", use_container_width=True):
         st.subheader("🛠️ Cấu hình hệ thống")
         
