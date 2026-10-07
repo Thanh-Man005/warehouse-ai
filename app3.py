@@ -125,7 +125,7 @@ def auto_route_and_process(question: str, sheets_dict: dict):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE (CỐ ĐỊNH MÔ HÌNH CHUẨN)
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -166,7 +166,7 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
 {context}
 
 QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
-1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.
+1. Trả lời HOÀN CHINH, ĐẦY ĐỦ từ đầu đến cuối.
 2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:
 | STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |
 | --- | --- | --- | --- | --- |
@@ -180,33 +180,11 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         }
     }
 
-    # 1. Truy vấn Google API lấy danh sách Model
-    gemini_models = []
-    try:
-        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        res_list = requests.get(list_url, timeout=10)
-        if res_list.status_code == 200:
-            models_data = res_list.json().get("models", [])
-            for m in models_data:
-                m_name = m.get("name", "").replace("models/", "")
-                methods = m.get("supportedGenerationMethods", [])
-                if "generateContent" in methods and m_name.startswith("gemini"):
-                    gemini_models.append(m_name)
-        elif res_list.status_code in [400, 401, 403]:
-            raise Exception("🔑 **API Key bị sai hoặc đã hết hạn!**\nVui lòng tạo API Key mới tại Google AI Studio.")
-    except Exception as e:
-        if "API Key" in str(e):
-            raise e
-
-    if gemini_models:
-        gemini_models.sort(key=lambda x: (
-            0 if "2.5-flash" in x else (1 if "1.5-flash" in x else (2 if "2.0-flash" in x else 3))
-        ))
-    else:
-        gemini_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
+    # Danh sách các mô hình tiêu chuẩn ổn định và có hạn mức miễn phí cao
+    target_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
 
     last_error = ""
-    for model_name in gemini_models:
+    for model_name in target_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
         try:
             resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
@@ -222,7 +200,7 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
             else:
                 res_err = resp.json().get("error", {})
                 err_msg = res_err.get("message", resp.text)
-                if "invalid authentication credentials" in err_msg.lower():
+                if "invalid authentication credentials" in err_msg.lower() or "api key not valid" in err_msg.lower():
                     raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng tạo API Key mới tại Google AI Studio.")
                 last_error = f"[{model_name}]: {err_msg}"
         except Exception as e:
