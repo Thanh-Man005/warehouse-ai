@@ -66,7 +66,7 @@ if "messages" not in st.session_state:
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — BỘ NHẬN DIỆN Ý ĐỊNH & ĐỊNH TUYẾN TỰ ĐỘNG (0 TOKEN)
 # ════════════════════════════════════════════════════════════════════════════
-def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
+def auto_route_and_process(question: str, sheets_dict: dict):
     q_low = question.lower().strip()
 
     # Nhóm câu hỏi bắt buộc gửi cho AI phân tích sâu
@@ -125,28 +125,30 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE (CHỈ LẤY MODEL GEMINI)
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else None
 
 @st.cache_data(show_spinner=False, ttl=60)
-def load_all_sheets_from_gsheet(url: str) -> dict[str, pd.DataFrame]:
+def load_all_sheets_from_gsheet(url: str) -> dict:
     sheet_id = extract_gsheet_id(url)
-    if not sheet_id: raise ValueError("Link không hợp lệ!")
+    if not sheet_id:
+        raise ValueError("Link không hợp lệ!")
     export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
     resp = requests.get(export_url)
-    if resp.status_code != 200: raise Exception("Lỗi tải trang tính")
+    if resp.status_code != 200:
+        raise Exception("Lỗi tải trang tính")
     xl = pd.ExcelFile(io.BytesIO(resp.content))
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
 @st.cache_data(show_spinner=False)
-def load_all_sheets_from_file(path: str) -> dict[str, pd.DataFrame]:
+def load_all_sheets_from_file(path: str) -> dict:
     xl = pd.ExcelFile(path)
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
-def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
+def ask_ai(question: str, sheets_dict: dict) -> str:
     api_key = st.session_state.get("api_key", "").strip()
     if not api_key:
         raise Exception("🔑 Chưa nhập API Key! Vui lòng dán API Key vào menu Cài đặt ở góc trái.")
@@ -178,7 +180,7 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         }
     }
 
-    # 1. Truy vấn Google API lấy danh sách Model (Chỉ lọc lấy model dạng gemini-*)
+    # 1. Truy vấn Google API lấy danh sách Model
     gemini_models = []
     try:
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
@@ -186,18 +188,16 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         if res_list.status_code == 200:
             models_data = res_list.json().get("models", [])
             for m in models_data:
-                m_name = m["name"].replace("models/", "")
+                m_name = m.get("name", "").replace("models/", "")
                 methods = m.get("supportedGenerationMethods", [])
-                # BẮT BUỘC CHỈ LẤY MODEL GEMINI VĂN BẢN
                 if "generateContent" in methods and m_name.startswith("gemini"):
                     gemini_models.append(m_name)
         elif res_list.status_code in [400, 401, 403]:
-            raise Exception("🔑 **API Key bị sai hoặc đã hết hạn!**\nVui lòng truy cập [Google AI Studio](https://aistudio.google.com/app/apikey) để tạo API Key mới và dán lại ở thanh bên trái.")
+            raise Exception("🔑 **API Key bị sai hoặc đã hết hạn!**\nVui lòng tạo API Key mới tại Google AI Studio.")
     except Exception as e:
         if "API Key" in str(e):
             raise e
 
-    # Sắp xếp ưu tiên các model Gemini tiêu chuẩn
     if gemini_models:
         gemini_models.sort(key=lambda x: (
             0 if "2.5-flash" in x else (1 if "1.5-flash" in x else (2 if "2.0-flash" in x else 3))
@@ -205,7 +205,6 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
     else:
         gemini_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
 
-    # 2. Thử từng Model Gemini
     last_error = ""
     for model_name in gemini_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
@@ -224,6 +223,108 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
                 res_err = resp.json().get("error", {})
                 err_msg = res_err.get("message", resp.text)
                 if "invalid authentication credentials" in err_msg.lower():
-                    raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng tạo API Key mới tại [Google AI Studio](https://aistudio.google.com/app/apikey) và dán lại ở ô Cài đặt bên trái.")
+                    raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng tạo API Key mới tại Google AI Studio.")
                 last_error = f"[{model_name}]: {err_msg}"
         except Exception as e:
+            if "API Key" in str(e):
+                raise e
+            last_error = f"[{model_name}]: {str(e)}"
+
+    raise Exception(f"Lỗi kết nối AI. Chi tiết: {last_error}")
+
+# ════════════════════════════════════════════════════════════════════════════
+# PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
+# ════════════════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown("## ⚙️ Cài đặt")
+    
+    api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
+    if api_key_input != st.session_state.api_key:
+        st.session_state.api_key = api_key_input
+        saved_config["api_key"] = api_key_input
+        save_json_data(CONFIG_PATH, saved_config)
+
+    st.divider()
+    st.markdown("### 📂 Nguồn dữ liệu kho")
+    
+    data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
+    data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
+    if data_source != st.session_state.data_source:
+        st.session_state.data_source = data_source
+        saved_config["data_source"] = data_source
+        save_json_data(CONFIG_PATH, saved_config)
+
+    sheets_data = None
+    if data_source == "🌐 Link Google Trang tính":
+        gsheet_url_input = st.text_input("Dán link Google Sheet:", value=st.session_state.gsheet_url)
+        if gsheet_url_input != st.session_state.gsheet_url:
+            st.session_state.gsheet_url = gsheet_url_input
+            saved_config["gsheet_url"] = gsheet_url_input
+            save_json_data(CONFIG_PATH, saved_config)
+
+        if st.session_state.gsheet_url:
+            try:
+                sheets_data = load_all_sheets_from_gsheet(st.session_state.gsheet_url)
+                st.success(f"✅ Kết nối thành công {len(sheets_data)} tab!")
+            except Exception:
+                st.error("❌ Lỗi đọc Google Sheet!")
+    else:
+        uploaded = st.file_uploader("Tải file Excel", type=["xlsx", "xls"])
+        if uploaded:
+            EXCEL_PATH.write_bytes(uploaded.read())
+            st.cache_data.clear()
+            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            st.success("✅ Đã lưu file Excel mới!")
+        elif EXCEL_PATH.exists():
+            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
+
+    st.divider()
+    if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
+        st.session_state.messages = []
+        save_json_data(CHAT_PATH, [])
+        st.rerun()
+
+st.markdown("# 🏭 AI Quản Lý Kho Hàng")
+
+if not sheets_data:
+    st.info("👈 Vui lòng dán Link Google Sheet hoặc tải file Excel ở sidebar trái.")
+    st.stop()
+
+tab_data, tab_chat = st.tabs(["📊 Xem dữ liệu", "💬 Hỏi đáp Thông Minh"])
+
+with tab_data:
+    selected_tab = st.selectbox("Chọn Tab:", list(sheets_data.keys()))
+    st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
+
+with tab_chat:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]): 
+            st.markdown(msg["content"])
+
+    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Sản phẩm mã SP / tên SP hiện còn chính xác bao nhiêu đơn vị trong kho?")
+
+    if st.button("🚀 Gửi câu hỏi", type="primary"):
+        if question:
+            with st.chat_message("user"): 
+                st.markdown(question)
+            
+            st.session_state.messages.append({"role": "user", "content": question})
+            save_json_data(CHAT_PATH, st.session_state.messages)
+
+            with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
+                local_answer, need_ai = auto_route_and_process(question, sheets_data)
+
+                if not need_ai:
+                    final_ans = local_answer
+                else:
+                    try:
+                        final_ans = ask_ai(question, sheets_data)
+                    except Exception as e:
+                        final_ans = f"❌ {str(e)}"
+
+                with st.chat_message("assistant"):
+                    st.markdown(final_ans)
+                
+                st.session_state.messages.append({"role": "assistant", "content": final_ans})
+                save_json_data(CHAT_PATH, st.session_state.messages)
