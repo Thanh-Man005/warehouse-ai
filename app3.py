@@ -180,8 +180,23 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
         }
     }
 
-    # CỐ ĐỊNH DANH SÁCH MODEL GEMINI TỐT NHẤT (Loại bỏ hoàn toàn quét tự động để tránh lỗi Quota)
-    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+    # TỰ ĐỘNG CẬP NHẬT: Lấy danh sách model Gemini hợp lệ thực tế từ API của bạn
+    candidate_models = []
+    try:
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        l_resp = requests.get(list_url, timeout=10)
+        if l_resp.status_code == 200:
+            m_list = l_resp.json().get("models", [])
+            for m in m_list:
+                m_name = m.get("name", "").replace("models/", "")
+                methods = m.get("supportedGenerationMethods", [])
+                if "generateContent" in methods and m_name.startswith("gemini-"):
+                    candidate_models.append(m_name)
+    except Exception:
+        pass
+
+    if not candidate_models:
+        candidate_models = ["gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest"]
 
     last_error = ""
     for model_name in candidate_models:
