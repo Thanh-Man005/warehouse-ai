@@ -109,7 +109,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — TỰ ĐỘNG DÒ MÌNH MODEL VÀ GỌI AI
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE CHUẨN
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -130,41 +130,16 @@ def load_all_sheets_from_file(path: str) -> dict[str, pd.DataFrame]:
     xl = pd.ExcelFile(path)
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
-def get_active_model(api_key: str) -> str:
-    """Tự động lấy danh sách Model từ Google để luôn dùng đúng tên Model khả dụng"""
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            models_data = resp.json().get("models", [])
-            valid_models = [
-                m["name"].replace("models/", "") 
-                for m in models_data 
-                if "generateContent" in m.get("supportedGenerationMethods", [])
-            ]
-            # Ưu tiên các model Flash dòng 2.5 và 1.5 mới nhất
-            for preferred in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash-exp"]:
-                if preferred in valid_models:
-                    return preferred
-            flash_models = [m for m in valid_models if "flash" in m]
-            if flash_models:
-                return flash_models[0]
-            if valid_models:
-                return valid_models[0]
-    except Exception:
-        pass
-    return "gemini-2.5-flash"
-
 def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
     api_key = st.session_state.get("api_key", "").strip()
     if not api_key:
-        raise Exception("Vui lòng nhập API Key ở menu Cài đặt bên trái.")
+        raise Exception("Chưa nhập API Key. Vui lòng lấy key tại Google AI Studio và dán vào menu bên trái.")
     
     prompt_data = []
     for name, df in sheets_dict.items():
         df_clean = df.dropna(how="all")
         if not df_clean.empty:
-            prompt_data.append(f"=== TAB [{name}] ===\n{df_clean.head(40).to_string(index=False)}")
+            prompt_data.append(f"=== TAB [{name}] ===\n{df_clean.head(50).to_string(index=False)}")
             
     context = "\n\n".join(prompt_data)
     
@@ -173,11 +148,11 @@ def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
 {context}
 
 QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
-1. Bạn phải trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối, tuyệt đối KHÔNG ĐƯỢC ngắt câu giữa chừng.
-2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN (nếu có danh sách/số lượng):
+1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.
+2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:
 | STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |
 | --- | --- | --- | --- | --- |
-3. Trả lời trực tiếp vào trọng tâm câu hỏi của người dùng."""
+3. Trả lời trực tiếp vào trọng tâm câu hỏi."""
 
     body = {
         "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nCÂU HỎI CỦA NGUỜI DÙNG: {question}"}]}],
@@ -187,25 +162,33 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         }
     }
 
-    active_model = get_active_model(api_key)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{active_model}:generateContent"
+    # Danh sách Model chuẩn mực từ Google API
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
+    ]
 
-    try:
-        resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            candidates = res_json.get("candidates", [])
-            if candidates and "content" in candidates[0]:
-                parts = candidates[0]["content"].get("parts", [])
-                text_parts = [p.get("text", "") for p in parts if "text" in p]
-                full_text = "".join(text_parts).strip()
-                if full_text:
-                    return f"🤖 **[Phân tích bởi AI]**\n\n{full_text}"
-        else:
-            res_err = resp.json().get("error", {}).get("message", resp.text)
-            raise Exception(f"{res_err}")
-    except Exception as e:
-        raise Exception(f"{str(e)}")
+    last_error = ""
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        try:
+            resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                candidates = res_json.get("candidates", [])
+                if candidates and "content" in candidates[0]:
+                    parts = candidates[0]["content"].get("parts", [])
+                    text_parts = [p.get("text", "") for p in parts if "text" in p]
+                    full_text = "".join(text_parts).strip()
+                    if full_text:
+                        return f"🤖 **[Phân tích bởi AI]**\n\n{full_text}"
+            else:
+                res_err = resp.json().get("error", {})
+                last_error = res_err.get("message", resp.text)
+        except Exception as e:
+            last_error = str(e)
+
+    raise Exception(f"{last_error}")
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
