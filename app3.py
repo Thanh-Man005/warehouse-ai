@@ -125,7 +125,7 @@ def auto_route_and_process(question: str, sheets_dict: dict):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE (TỰ ĐỘNG DÒ MÔ HÌNH KHẢ DỤNG)
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -180,7 +180,6 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
         }
     }
 
-    # Dò danh sách model khả dụng trực tiếp từ API Key của người dùng
     candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
     try:
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
@@ -312,3 +311,10 @@ with tab_chat:
                     try:
                         final_ans = ask_ai(question, sheets_data)
                     except Exception as e:
+                        final_ans = f"❌ {str(e)}"
+
+                with st.chat_message("assistant"):
+                    st.markdown(final_ans)
+                
+                st.session_state.messages.append({"role": "assistant", "content": final_ans})
+                save_json_data(CHAT_PATH, st.session_state.messages)
