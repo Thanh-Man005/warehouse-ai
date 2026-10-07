@@ -125,7 +125,7 @@ def auto_route_and_process(question: str, sheets_dict: dict):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE (CỐ ĐỊNH MÔ HÌNH CHUẨN)
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE (SỬ DỤNG MÔ HÌNH GEMINI MỚI)
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -166,22 +166,22 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
 {context}
 
 QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
-1. Trả lời HOÀN CHINH, ĐẦY ĐỦ từ đầu đến cuối.
+1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.
 2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:
 | STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |
 | --- | --- | --- | --- | --- |
 3. Trả lời trực tiếp vào trọng tâm câu hỏi."""
 
     body = {
-        "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nCÂU HỎI CỦA NGUỜI DÙNG: {question}"}]}],
+        "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nCÂU HỎI CỦA NGƯỜI DÙNG: {question}"}]}],
         "generationConfig": {
             "maxOutputTokens": 8192,
             "temperature": 0.2
         }
     }
 
-    # Danh sách các mô hình tiêu chuẩn ổn định và có hạn mức miễn phí cao
-    target_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+    # Danh sách các tên mô hình Gemini chuẩn đang hoạt động
+    target_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
 
     last_error = ""
     for model_name in target_models:
@@ -201,7 +201,7 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
                 res_err = resp.json().get("error", {})
                 err_msg = res_err.get("message", resp.text)
                 if "invalid authentication credentials" in err_msg.lower() or "api key not valid" in err_msg.lower():
-                    raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng tạo API Key mới tại Google AI Studio.")
+                    raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng kiểm tra lại API Key.")
                 last_error = f"[{model_name}]: {err_msg}"
         except Exception as e:
             if "API Key" in str(e):
