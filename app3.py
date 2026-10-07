@@ -107,23 +107,7 @@ def auto_route_and_process(question: str, sheets_dict: dict):
             msg = f"⚡ **[Tự động xử lý - 0 Token]**\n\n💰 **Tổng giá trị kho:** `{total_val:,.0f} VNĐ`\n\nChi tiết từng tab:\n" + "\n".join(details)
             return msg, False
 
-    # 3. Đếm số sản phẩm / số mặt hàng trong kho (0 Token)
-    elif any(k in q_low for k in ["số sản phẩm", "sản phẩm trong kho", "bao nhiêu sản phẩm", "tổng số mặt hàng", "số lượng mặt hàng", "đếm sản phẩm"]):
-        total_items = 0
-        details = []
-        for name, df in sheets_dict.items():
-            name_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã"])), None)
-            if name_col:
-                count = df[name_col].dropna().count()
-            else:
-                count = len(df.dropna(how="all"))
-            total_items += count
-            details.append(f"- Tab **{name}**: `{count}` sản phẩm")
-        
-        msg = f"⚡ **[Tự động xử lý - 0 Token]**\n\n📦 **Tổng số sản phẩm/mặt hàng trong kho:** `{total_items}` mặt hàng\n\nChi tiết từng tab:\n" + "\n".join(details)
-        return msg, False
-
-    # 4. Tra cứu tồn kho tổng quát (0 Token)
+    # 3. Tra cứu tồn kho tổng quát (0 Token)
     elif any(k in q_low for k in ["còn chính xác bao nhiêu", "còn bao nhiêu", "số lượng còn", "số lượng trong kho"]):
         found_rows = []
         for name, df in sheets_dict.items():
@@ -141,7 +125,7 @@ def auto_route_and_process(question: str, sheets_dict: dict):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE (LỌC MODEL CHUẨN)
+# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -196,27 +180,8 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
         }
     }
 
-    # Danh sách các model tiêu chuẩn
-    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
-    
-    # Lọc bỏ các model thử nghiệm / deep-research / chuyên biệt bị giới hạn Quota = 0
-    try:
-        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        l_resp = requests.get(list_url, timeout=10)
-        if l_resp.status_code == 200:
-            m_list = l_resp.json().get("models", [])
-            for m in m_list:
-                m_name = m.get("name", "").replace("models/", "")
-                methods = m.get("supportedGenerationMethods", [])
-                
-                # Bỏ qua các model chuyên biệt deep-research, embedding, imagen...
-                if "generateContent" in methods:
-                    if any(bad in m_name.lower() for bad in ["deep-research", "preview", "embedding", "imagen", "tts", "stt", "aqa", "bison", "computer-use"]):
-                        continue
-                    if m_name not in candidate_models:
-                        candidate_models.append(m_name)
-    except Exception:
-        pass
+    # CỐ ĐỊNH DANH SÁCH MODEL GEMINI TỐT NHẤT (Loại bỏ hoàn toàn quét tự động để tránh lỗi Quota)
+    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
 
     last_error = ""
     for model_name in candidate_models:
