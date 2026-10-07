@@ -109,7 +109,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE CHUẨN
+# PHẦN 2 — DÒ TÌM DỘNG MODEL KHẢ DỤNG & GỌI AI
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -162,14 +162,30 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         }
     }
 
-    # Danh sách Model chuẩn mực từ Google API
-    models_to_try = [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro"
-    ]
+    # 1. Truy vấn Google API để lấy danh sách Model thực tế được hỗ trợ
+    available_models = []
+    try:
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        res_list = requests.get(list_url, timeout=10)
+        if res_list.status_code == 200:
+            models_data = res_list.json().get("models", [])
+            for m in models_data:
+                methods = m.get("supportedGenerationMethods", [])
+                if "generateContent" in methods:
+                    m_name = m["name"].replace("models/", "")
+                    available_models.append(m_name)
+    except Exception:
+        pass
 
+    # Tự sắp xếp ưu tiên các dòng Flash / Pro khả dụng
+    if available_models:
+        available_models.sort(key=lambda x: ("flash" not in x, "pro" not in x, x))
+    else:
+        available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
+
+    # 2. Thử lần lượt các Model đang hoạt động
     last_error = ""
-    for model_name in models_to_try:
+    for model_name in available_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
         try:
             resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
@@ -181,14 +197,14 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
                     text_parts = [p.get("text", "") for p in parts if "text" in p]
                     full_text = "".join(text_parts).strip()
                     if full_text:
-                        return f"🤖 **[Phân tích bởi AI]**\n\n{full_text}"
+                        return f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n{full_text}"
             else:
                 res_err = resp.json().get("error", {})
-                last_error = res_err.get("message", resp.text)
+                last_error = f"[{model_name}]: {res_err.get('message', resp.text)}"
         except Exception as e:
-            last_error = str(e)
+            last_error = f"[{model_name}]: {str(e)}"
 
-    raise Exception(f"{last_error}")
+    raise Exception(f"Không kết nối được model nào. Chi tiết: {last_error}")
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
