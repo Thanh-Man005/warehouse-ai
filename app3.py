@@ -4,6 +4,7 @@ import json
 import os
 import re
 import io
+import unicodedata
 import requests
 from pathlib import Path
 
@@ -107,20 +108,82 @@ def auto_route_and_process(question: str, sheets_dict: dict):
             msg = f"⚡ **[Tự động xử lý - 0 Token]**\n\n💰 **Tổng giá trị kho:** `{total_val:,.0f} VNĐ`\n\nChi tiết từng tab:\n" + "\n".join(details)
             return msg, False
 
-    # 3. Tra cứu tồn kho tổng quát (0 Token)
+    # 3. Tra cứu tồn kho theo đúng mã/tên sản phẩm (0 Token)
     elif any(k in q_low for k in ["còn chính xác bao nhiêu", "còn bao nhiêu", "số lượng còn", "số lượng trong kho"]):
+        # Bản cũ trả về 15 dòng đầu tiên nên có thể trả lời sai sản phẩm.
+        # Chỉ tự xử lý 0-token khi tìm thấy mã/tên sản phẩm thật sự trong câu hỏi.
+        def _norm(v):
+            s = unicodedata.normalize("NFD", str(v))
+            s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+            return re.sub(r"\s+", " ", s.lower()).strip()
+
+        quoted = re.findall(r'["“](.+?)["”]', question)
+        product_codes = re.findall(
+            r"\b[A-Za-zÀ-ỹ]{1,8}[-_/]?\d{1,12}\b", question
+        )
+
+        generic_words = {
+            "san", "pham", "ma", "ten", "sp", "hien", "con", "chinh", "xac",
+            "bao", "nhieu", "don", "vi", "trong", "kho", "so", "luong", "hang",
+            "ton", "nay", "co", "la"
+        }
+
+        tokens = [
+            t for t in re.findall(r"[a-zA-Z0-9À-ỹ._/-]+", _norm(question))
+            if len(t) >= 2 and t not in generic_words
+        ]
+
+        search_terms = [_norm(x) for x in quoted + product_codes]
+
+        # Chỉ dùng các token còn lại khi câu hỏi có nội dung đủ cụ thể.
+        if not search_terms and tokens:
+            candidate = " ".join(tokens)
+            if len(candidate) >= 3:
+                search_terms = [candidate]
+
         found_rows = []
         for name, df in sheets_dict.items():
-            stock_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["ton", "số lượng", "sl", "tồn kho"])), None)
-            name_col  = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã sp", "mã"])), None)
-            
-            if stock_col and name_col:
-                df_clean = df.dropna(subset=[stock_col, name_col]).copy()
-                for _, row in df_clean.head(15).iterrows():
-                    found_rows.append(f"- **{row[name_col]}** (Tab `{name}`): còn `{row[stock_col]}` đơn vị")
-        
+            stock_col = next(
+                (
+                    c for c in df.columns
+                    if any(x in _norm(c) for x in ["ton", "so luong", "sl", "ton kho"])
+                ),
+                None
+            )
+
+            product_cols = [
+                c for c in df.columns
+                if any(
+                    x in _norm(c)
+                    for x in ["ten", "vat tu", "mat hang", "ma sp", "ma", "san pham"]
+                )
+            ]
+
+            if not stock_col or not product_cols or not search_terms:
+                continue
+
+            df_clean = df.dropna(subset=[stock_col]).copy()
+
+            for _, row in df_clean.iterrows():
+                searchable = " | ".join(
+                    _norm(row[c]) for c in product_cols if pd.notna(row[c])
+                )
+
+                if any(term and term in searchable for term in search_terms):
+                    product_label = next(
+                        (
+                            str(row[c])
+                            for c in product_cols
+                            if pd.notna(row[c]) and str(row[c]).strip()
+                        ),
+                        "Sản phẩm"
+                    )
+                    found_rows.append(
+                        f"- **{product_label}** (Tab `{name}`): còn **`{row[stock_col]}` đơn vị**"
+                    )
+
         if found_rows:
-            return "⚡ **[Tự động tra cứu kho - 0 Token]**\n\n" + "\n".join(found_rows), False
+            return "⚡ **[Tự động tra cứu kho - 0 Token]**\n\n" + "\n".join(found_rows[:20]), False
 
     return None, True
 
@@ -152,78 +215,140 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
     api_key = st.session_state.get("api_key", "").strip()
     if not api_key:
         raise Exception("🔑 Chưa nhập API Key! Vui lòng dán API Key vào menu Cài đặt ở góc trái.")
-    
+
     prompt_data = []
     for name, df in sheets_dict.items():
         df_clean = df.dropna(how="all")
         if not df_clean.empty:
-            prompt_data.append("=== TAB [" + str(name) + "] ===\n" + df_clean.head(50).to_string(index=False))
-            
+            # Giới hạn dữ liệu gửi AI để giảm token.
+            prompt_data.append(
+                "=== TAB [" + str(name) + "] ===\n" +
+                df_clean.head(50).to_string(index=False)
+            )
+
     context = "\n\n".join(prompt_data)
-    
+
     system_text = (
-        "Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu kho hàng hiện tại (tối đa 50 dòng):\n\n"
+        "Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu kho hàng hiện tại "
+        "(tối đa 50 dòng mỗi tab):\n\n"
         + context + "\n\n"
         "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
-        "1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.\n"
-        "2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:\n"
-        "| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "3. Trả lời trực tiếp vào trọng tâm câu hỏi."
+        "1. Chỉ sử dụng dữ liệu được cung cấp; không tự bịa số lượng.\n"
+        "2. Trả lời trực tiếp vào trọng tâm câu hỏi.\n"
+        "3. Nếu có danh sách/số lượng, ưu tiên bảng Markdown.\n"
+        "4. Nếu không tìm thấy sản phẩm/mã sản phẩm trong dữ liệu, nói rõ là "
+        "không tìm thấy thay vì đoán."
     )
 
     body = {
-        "contents": [{"role": "user", "parts": [{"text": system_text + "\n\nCÂU HỎI CỦA NGƯỜI DÙNG: " + question}]}],
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "text": system_text + "\n\nCÂU HỎI CỦA NGƯỜI DÙNG: " + question
+            }]
+        }],
         "generationConfig": {
-            "maxOutputTokens": 8192,
-            "temperature": 0.2
+            # Gemini 3.8 Flash không cần temperature theo hướng dẫn migration hiện tại.
+            "maxOutputTokens": 4096
         }
     }
 
-    # TỰ ĐỘNG CẬP NHẬT: Lấy danh sách model Gemini hợp lệ thực tế từ API của bạn
-    candidate_models = []
-    try:
-        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        l_resp = requests.get(list_url, timeout=10)
-        if l_resp.status_code == 200:
-            m_list = l_resp.json().get("models", [])
-            for m in m_list:
-                m_name = m.get("name", "").replace("models/", "")
-                methods = m.get("supportedGenerationMethods", [])
-                if "generateContent" in methods and m_name.startswith("gemini-"):
-                    candidate_models.append(m_name)
-    except Exception:
-        pass
+    # KHÔNG tự động dùng toàn bộ danh sách model từ API.
+    # Cách cũ có thể chọn nhầm Computer Use, là nguyên nhân trực tiếp
+    # của lỗi quota=0 trong ảnh.
+    candidate_models = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+    ]
 
-    if not candidate_models:
-        candidate_models = ["gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest"]
+    last_errors = []
 
-    last_error = ""
     for model_name in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        url = (
+            f"https://generativelanguage.googleapis.com/"
+            f"v1beta/models/{model_name}:generateContent"
+        )
+
         try:
-            resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
+            resp = requests.post(
+                url,
+                params={"key": api_key},
+                json=body,
+                timeout=45
+            )
+
             if resp.status_code == 200:
                 res_json = resp.json()
                 candidates = res_json.get("candidates", [])
+
                 if candidates and "content" in candidates[0]:
                     parts = candidates[0]["content"].get("parts", [])
-                    text_parts = [p.get("text", "") for p in parts if "text" in p]
+                    text_parts = [p.get("text", "") for p in parts if p.get("text")]
                     full_text = "".join(text_parts).strip()
+
                     if full_text:
-                        return f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n{full_text}"
-            else:
+                        return (
+                            f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n"
+                            + full_text
+                        )
+
+                last_errors.append(f"[{model_name}]: API trả về kết quả rỗng.")
+                continue
+
+            try:
                 res_err = resp.json().get("error", {})
                 err_msg = res_err.get("message", resp.text)
-                if "invalid authentication credentials" in err_msg.lower() or "api key not valid" in err_msg.lower():
-                    raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng kiểm tra lại API Key.")
-                last_error = f"[{model_name}]: {err_msg}"
+            except Exception:
+                err_msg = resp.text
+
+            err_low = err_msg.lower()
+
+            if (
+                "api key not valid" in err_low
+                or "invalid authentication credentials" in err_low
+            ):
+                raise Exception(
+                    "🔑 **API Key không hợp lệ hoặc đã hết hạn!**\n"
+                    "Vui lòng kiểm tra lại API Key trong sidebar."
+                )
+
+            # Hết quota / rate limit: thử model kế tiếp.
+            if resp.status_code == 429 or "quota" in err_low or "rate limit" in err_low:
+                last_errors.append(
+                    f"[{model_name}]: hết quota hoặc bị giới hạn tạm thời."
+                )
+                continue
+
+            # Model chưa bật cho project: thử model tiếp theo.
+            if resp.status_code in (400, 404):
+                last_errors.append(f"[{model_name}]: {err_msg}")
+                continue
+
+            last_errors.append(
+                f"[{model_name}]: HTTP {resp.status_code} - {err_msg}"
+            )
+
+        except requests.RequestException as e:
+            last_errors.append(f"[{model_name}]: lỗi mạng - {e}")
         except Exception as e:
             if "API Key" in str(e):
-                raise e
-            last_error = f"[{model_name}]: {str(e)}"
+                raise
+            last_errors.append(f"[{model_name}]: {e}")
 
-    raise Exception(f"Lỗi kết nối AI. Chi tiết: {last_error}")
+    detail = "\n".join(last_errors[-5:])
+
+    if any("quota" in x.lower() for x in last_errors):
+        raise Exception(
+            "⚠️ **Gemini đang hết quota hoặc API Key chưa được cấp quota cho các model văn bản.**\n\n"
+            "Ứng dụng đã loại bỏ hoàn toàn model Computer Use cũ "
+            "và chỉ dùng các model Gemini văn bản phù hợp cho hỏi đáp Excel.\n\n"
+            "Chi tiết kỹ thuật:\n" + detail
+        )
+
+    raise Exception("❌ **Lỗi kết nối AI.**\n\n" + detail)
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
@@ -232,6 +357,7 @@ with st.sidebar:
     st.markdown("## ⚙️ Cài đặt")
     
     api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
+    st.caption("AI dùng Gemini 3.8 Flash / 3.7 Flash; không dùng Computer Use.")
     if api_key_input != st.session_state.api_key:
         st.session_state.api_key = api_key_input
         saved_config["api_key"] = api_key_input
