@@ -33,7 +33,7 @@ CONFIG_PATH = DATA_DIR / "config.json"
 CHAT_PATH   = DATA_DIR / "chat_history.json"
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 0 — HÀM LƯU / TẢI CẤU HÌNH VÀ LỊCH SỬ CHAT (PERSISTENCE)
+# PHẦN 0 — HÀM LƯU / TẢI CẤU HÌNH VÀ LỊCH SỬ CHAT
 # ════════════════════════════════════════════════════════════════════════════
 def load_json_data(path: Path, default_val):
     if path.exists():
@@ -48,7 +48,6 @@ def save_json_data(path: Path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Khởi tạo trạng thái ban đầu từ file đã lưu
 saved_config = load_json_data(CONFIG_PATH, {
     "api_key": "",
     "data_source": "🌐 Link Google Trang tính",
@@ -65,16 +64,15 @@ if "messages" not in st.session_state:
     st.session_state.messages = load_json_data(CHAT_PATH, [])
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 1 — BỘ NHẬN DIỆN Ý ĐỊNH & ĐỊNH TUYẾN TỰ ĐỘNG (AUTO-ROUTER)
+# PHẦN 1 — BỘ NHẬN DIỆN Ý ĐỊNH & ĐỊNH TUYẾN TỰ ĐỘNG
 # ════════════════════════════════════════════════════════════════════════════
 def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     q_low = question.lower().strip()
 
-    # Bắt buộc chuyển cho AI nếu hỏi nâng cao / danh sách / bảng
-    if any(k in q_low for k in ["bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất"]):
+    if any(k in q_low for k in ["bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất", "chính xác"]):
         return None, True 
 
-    # 1. TRA CỨU HÀNG TỒN ÍT / SẮP HẾT (Xử lý nội bộ 0 Token)
+    # 1. Tra cứu tồn ít / sắp hết
     if any(k in q_low for k in ["sắp hết", "tồn ít", "cảnh báo", "hết hàng", "thiếu hàng"]):
         results = []
         for name, df in sheets_dict.items():
@@ -93,7 +91,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
             return "⚡ **[Tự động xử lý - 0 Token]**\n\n" + "\n\n".join(results), False
         return "⚡ **[Tự động xử lý - 0 Token]**: Tất cả mặt hàng đều an toàn (tồn kho > 20).", False
 
-    # 2. TÍNH TỔNG GIÁ TRỊ / TỔNG TIỀN
+    # 2. Tính tổng giá trị
     elif any(k in q_low for k in ["tổng giá trị", "tổng tiền", "giá trị kho", "tổng vốn"]):
         total_val = 0
         details = []
@@ -111,7 +109,7 @@ def auto_route_and_process(question: str, sheets_dict: dict[str, pd.DataFrame]):
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI (CHUẨN TÊN MODEL CHÍNH THỨC)
+# PHẦN 2 — TỰ ĐỘNG DÒ MÌNH MODEL VÀ GỌI AI
 # ════════════════════════════════════════════════════════════════════════════
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
@@ -132,6 +130,31 @@ def load_all_sheets_from_file(path: str) -> dict[str, pd.DataFrame]:
     xl = pd.ExcelFile(path)
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
+def get_active_model(api_key: str) -> str:
+    """Tự động lấy danh sách Model từ Google để luôn dùng đúng tên Model khả dụng"""
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            models_data = resp.json().get("models", [])
+            valid_models = [
+                m["name"].replace("models/", "") 
+                for m in models_data 
+                if "generateContent" in m.get("supportedGenerationMethods", [])
+            ]
+            # Ưu tiên các model Flash dòng 2.5 và 1.5 mới nhất
+            for preferred in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash-exp"]:
+                if preferred in valid_models:
+                    return preferred
+            flash_models = [m for m in valid_models if "flash" in m]
+            if flash_models:
+                return flash_models[0]
+            if valid_models:
+                return valid_models[0]
+    except Exception:
+        pass
+    return "gemini-2.5-flash"
+
 def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
     api_key = st.session_state.get("api_key", "").strip()
     if not api_key:
@@ -151,7 +174,7 @@ def ask_ai(question: str, sheets_dict: dict[str, pd.DataFrame]) -> str:
 
 QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
 1. Bạn phải trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối, tuyệt đối KHÔNG ĐƯỢC ngắt câu giữa chừng.
-2. Trình bày thông tin rõ ràng dưới dạng BẢNG MARKDOWN chuẩn (nếu có danh sách mặt hàng, số lượng):
+2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN (nếu có danh sách/số lượng):
 | STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |
 | --- | --- | --- | --- | --- |
 3. Trả lời trực tiếp vào trọng tâm câu hỏi của người dùng."""
@@ -164,41 +187,32 @@ QUY TẮC BẮT BUỘC KHI TRẢ LỜI:
         }
     }
 
-    # Tên các Model chính thức chuẩn 100% từ Google
-    models_to_try = [
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
-        "gemini-2.0-flash"
-    ]
+    active_model = get_active_model(api_key)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{active_model}:generateContent"
 
-    last_error = ""
-    for model_name in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-        try:
-            resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
-            if resp.status_code == 200:
-                res_json = resp.json()
-                candidates = res_json.get("candidates", [])
-                if candidates and "content" in candidates[0]:
-                    parts = candidates[0]["content"].get("parts", [])
-                    text_parts = [p.get("text", "") for p in parts if "text" in p]
-                    full_text = "".join(text_parts).strip()
-                    if full_text:
-                        return f"🤖 **[Phân tích bởi AI]**\n\n{full_text}"
-            else:
-                last_error = resp.text
-        except Exception as e:
-            last_error = str(e)
-
-    raise Exception(f"Lỗi kết nối AI: {last_error[:200]}")
+    try:
+        resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            candidates = res_json.get("candidates", [])
+            if candidates and "content" in candidates[0]:
+                parts = candidates[0]["content"].get("parts", [])
+                text_parts = [p.get("text", "") for p in parts if "text" in p]
+                full_text = "".join(text_parts).strip()
+                if full_text:
+                    return f"🤖 **[Phân tích bởi AI]**\n\n{full_text}"
+        else:
+            res_err = resp.json().get("error", {}).get("message", resp.text)
+            raise Exception(f"{res_err}")
+    except Exception as e:
+        raise Exception(f"{str(e)}")
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ LƯU TRỮ CẤU HÌNH
+# PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
 # ════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## ⚙️ Cài đặt")
     
-    # 1. Tự động lưu API Key khi thay đổi
     api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
     if api_key_input != st.session_state.api_key:
         st.session_state.api_key = api_key_input
@@ -208,7 +222,6 @@ with st.sidebar:
     st.divider()
     st.markdown("### 📂 Nguồn dữ liệu kho")
     
-    # 2. Tự động lưu Nguồn dữ liệu (Google Sheet hoặc Excel)
     data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
     data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
     if data_source != st.session_state.data_source:
@@ -218,7 +231,6 @@ with st.sidebar:
 
     sheets_data = None
     if data_source == "🌐 Link Google Trang tính":
-        # 3. Tự động lưu Link Google Sheet
         gsheet_url_input = st.text_input("Dán link Google Sheet:", value=st.session_state.gsheet_url)
         if gsheet_url_input != st.session_state.gsheet_url:
             st.session_state.gsheet_url = gsheet_url_input
@@ -243,7 +255,6 @@ with st.sidebar:
             st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
 
     st.divider()
-    # Nút xóa lịch sử chat khi cần làm mới hoàn toàn
     if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
         st.session_state.messages = []
         save_json_data(CHAT_PATH, [])
@@ -266,7 +277,7 @@ with tab_chat:
         with st.chat_message(msg["role"]): 
             st.markdown(msg["content"])
 
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Các mặt hàng xuất nhiều nhất đạt được trong 1 tháng")
+    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Sản phẩm mã SP / tên SP hiện còn chính xác bao nhiêu đơn vị trong kho?")
 
     if st.button("🚀 Gửi câu hỏi", type="primary"):
         if question:
@@ -285,7 +296,7 @@ with tab_chat:
                     try:
                         final_ans = ask_ai(question, sheets_data)
                     except Exception as e:
-                        final_ans = f"❌ Lỗi: {str(e)}"
+                        final_ans = f"❌ Lỗi kết nối AI: {str(e)}"
 
                 with st.chat_message("assistant"):
                     st.markdown(final_ans)
