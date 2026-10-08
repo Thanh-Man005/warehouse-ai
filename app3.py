@@ -5,12 +5,13 @@ import os
 import re
 import io
 import requests
+import hashlib
 import plotly.express as px
 from pathlib import Path
 
 # ── Cấu hình trang ──────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI Kho Hàng - Tự Động Định Tuyến & Vẽ Biểu Đồ",
+    page_title="AI Kho Hàng - Quản Lý & Phân Tích",
     page_icon="🏭",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -21,8 +22,15 @@ st.markdown("""
 <style>
     .main .block-container { padding-top: 1.5rem; max-width: 1100px; }
     .stChatMessage { border-radius: 12px; }
-    .badge-auto { background: #D1FAE5; color: #065F46; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
-    .badge-ai   { background: #FEF3C7; color: #92400E; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
+    .login-box {
+        max-width: 420px;
+        margin: 50px auto;
+        padding: 30px;
+        background-color: #ffffff;
+        border-radius: 15px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        border: 1px solid #e2e8f0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -32,10 +40,15 @@ DATA_DIR.mkdir(exist_ok=True)
 EXCEL_PATH  = DATA_DIR / "warehouse.xlsx"
 CONFIG_PATH = DATA_DIR / "config.json"
 CHAT_PATH   = DATA_DIR / "chat_history.json"
+USERS_PATH  = DATA_DIR / "users.json"
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 0 — HÀM LƯU / TẢI CẤU HÌNH VÀ LỊCH SỬ CHAT
+# PHẦN 0 — XỬ LÝ ĐĂNG NHẬP VÀ MÃ HÓA TÀI KHOẢN
 # ════════════════════════════════════════════════════════════════════════════
+def hash_password(password: str) -> str:
+    """Mã hóa mật khẩu bằng SHA-256 để bảo mật"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
 def load_json_data(path: Path, default_val):
     if path.exists():
         try:
@@ -49,6 +62,64 @@ def save_json_data(path: Path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# Khởi tạo tài khoản mặc định nếu chưa có file users.json
+def init_users_data():
+    users = load_json_data(USERS_PATH, {})
+    if not users:
+        # Tạo tài khoản Admin mặc định: admin / admin123
+        users = {
+            "admin": {
+                "password": hash_password("admin123"),
+                "role": "admin",
+                "fullname": "Quản trị viên"
+            }
+        }
+        save_json_data(USERS_PATH, users)
+    return users
+
+# Khởi tạo trạng thái Session State
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "user_role" not in st.session_state:
+    st.session_state.user_role = ""
+
+# ── MÀN HÌNH ĐĂNG NHẬP ────────────────────────────────────────────────────────
+def render_login_screen():
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center;'>🔐 ĐĂNG NHẬP HỆ THỐNG</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #666;'>Hệ thống Quản lý Kho hàng AI nội bộ</p>", unsafe_allow_html=True)
+        
+        with st.form("login_form"):
+            username_input = st.text_input("👤 Tên tài khoản").strip()
+            password_input = st.text_input("🔑 Mật khẩu", type="password").strip()
+            submit_btn = st.form_submit_button("Đăng Nhập", type="primary", use_container_width=True)
+            
+            if submit_btn:
+                users = init_users_data()
+                if username_input in users:
+                    hashed_pwd = hash_password(password_input)
+                    if users[username_input]["password"] == hashed_pwd:
+                        st.session_state.logged_in = True
+                        st.session_state.username = username_input
+                        st.session_state.user_role = users[username_input].get("role", "user")
+                        st.success("✅ Đăng nhập thành công!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Sai mật khẩu!")
+                else:
+                    st.error("❌ Tài khoản không tồn tại!")
+
+if not st.session_state.logged_in:
+    render_login_screen()
+    st.stop()  # Dừng chương trình tại đây nếu chưa đăng nhập
+
+# ════════════════════════════════════════════════════════════════════════════
+# PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
+# ════════════════════════════════════════════════════════════════════════════
 saved_config = load_json_data(CONFIG_PATH, {
     "api_key": "",
     "data_source": "🌐 Link Google Trang tính",
@@ -64,9 +135,6 @@ if "data_source" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = load_json_data(CHAT_PATH, [])
 
-# ════════════════════════════════════════════════════════════════════════════
-# PHẦN 1 — BỘ NHẬN DIỆN Ý ĐỊNH & ĐỊNH TUYẾN TỰ ĐỘNG (0 TOKEN)
-# ════════════════════════════════════════════════════════════════════════════
 def auto_route_and_process(question: str, sheets_dict: dict):
     q_low = question.lower().strip()
 
@@ -229,20 +297,13 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
 
 # HÀM HIỂN THỊ: ẨN HOÀN TOÀN CODE PYTHON VÀ CHỈ VẼ BIỂU ĐỒ
 def render_message_and_chart(content: str, sheets_dict: dict):
-    # Regex tìm tất cả các đoạn mã code ```...```
     code_pattern = r"```(?:python|py)?\s*(.*?)\s*```"
-    
-    # Trích xuất tất cả khối code Python
     code_matches = re.findall(code_pattern, content, re.DOTALL)
-    
-    # XÓA TRIỆT ĐỂ tất cả khối code khỏi văn bản hiển thị
     clean_text = re.sub(code_pattern, "", content, flags=re.DOTALL).strip()
     
-    # 1. Hiển thị phần lời văn / phân tích (Đã lọc sạch 100% code)
     if clean_text:
         st.markdown(clean_text)
         
-    # 2. Chạy ngầm code Python để vẽ biểu đồ
     if code_matches:
         for code_block in code_matches:
             if any(kw in code_block for kw in ["plotly", "px", "fig"]):
@@ -252,12 +313,46 @@ def render_message_and_chart(content: str, sheets_dict: dict):
                     if "fig" in local_vars:
                         st.plotly_chart(local_vars["fig"], use_container_width=True)
                 except Exception:
-                    pass # Hoàn toàn không làm phiền người dùng nếu code bị lỗi
+                    pass
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
+# PHẦN 3 — GIAO DIỆN CHÍNH & SIDEBAR QUẢN TRỊ
 # ════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
+    # Thông tin tài khoản đăng nhập
+    st.markdown(f"👤 Xin chào: **{st.session_state.username}** (`{st.session_state.user_role.upper()}`)")
+    if st.button("🚪 Đăng xuất", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.session_state.user_role = ""
+        st.rerun()
+
+    st.divider()
+
+    # TÍNH NĂNG CHỈ DÀNH CHO ADMIN: CẤP TÀI KHOẢN MỚI
+    if st.session_state.user_role == "admin":
+        with st.expander("➕ Cấp tài khoản mới"):
+            new_user = st.text_input("Tên đăng nhập mới").strip()
+            new_pass = st.text_input("Mật khẩu mới", type="password").strip()
+            new_role = st.selectbox("Quyền", ["user", "admin"])
+            
+            if st.button("Tạo tài khoản"):
+                if new_user and new_pass:
+                    users_data = load_json_data(USERS_PATH, {})
+                    if new_user in users_data:
+                        st.error("Tài khoản đã tồn tại!")
+                    else:
+                        users_data[new_user] = {
+                            "password": hash_password(new_pass),
+                            "role": new_role,
+                            "fullname": new_user
+                        }
+                        save_json_data(USERS_PATH, users_data)
+                        st.success(f"✅ Đã tạo tài khoản `{new_user}` thành công!")
+                else:
+                    st.warning("Vui lòng điền đầy đủ thông tin!")
+        st.divider()
+
     st.markdown("## ⚙️ Cài đặt")
     
     api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
@@ -307,6 +402,7 @@ with st.sidebar:
         save_json_data(CHAT_PATH, [])
         st.rerun()
 
+# ── GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH ─────────────────────────────────────────
 st.markdown("# 🏭 AI Quản Lý Kho Hàng")
 
 if not sheets_data:
