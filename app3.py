@@ -171,7 +171,7 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
         "| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |\n"
         "| --- | --- | --- | --- | --- |\n"
         "3. Trả lời trực tiếp vào trọng tâm câu hỏi.\n"
-        "4. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ (hoặc đồ thị): Hãy viết một đoạn code Python sử dụng thư viện `plotly.express` (đã import sẵn là `px`) dựa vào biến dữ liệu `sheets_dict` (chứa dict các DataFrame). Đặt biểu đồ hoàn chỉnh vào biến tên là `fig`. Viết code trong khối ```python ... ```."
+        "4. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
     )
 
     body = {
@@ -182,7 +182,7 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
         }
     }
 
-    # TỰ ĐỘNG CẬP NHẬT: Lấy danh sách model Gemini hợp lệ thực tế từ API
+    # TỰ ĐỘNG CẬP NHẬT danh sách model
     candidate_models = []
     try:
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
@@ -227,18 +227,32 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
 
     raise Exception(f"Lỗi kết nối AI. Chi tiết: {last_error}")
 
-# Hàm render tin nhắn & tự động vẽ biểu đồ nếu có code Python Plotly
+# HÀM HIỂN THỊ: ẨN HOÀN TOÀN CODE PYTHON VÀ CHỈ VẼ BIỂU ĐỒ
 def render_message_and_chart(content: str, sheets_dict: dict):
-    st.markdown(content)
-    if "```python" in content:
-        try:
-            code_block = content.split("```python")[1].split("```")[0]
-            local_vars = {"sheets_dict": sheets_dict, "pd": pd, "px": px}
-            exec(code_block, globals(), local_vars)
-            if "fig" in local_vars:
-                st.plotly_chart(local_vars["fig"], use_container_width=True)
-        except Exception as e:
-            st.caption(f"*(Lỗi hiển thị biểu đồ: {e})*")
+    # Regex tìm tất cả các đoạn mã code ```...```
+    code_pattern = r"```(?:python|py)?\s*(.*?)\s*```"
+    
+    # Trích xuất tất cả khối code Python
+    code_matches = re.findall(code_pattern, content, re.DOTALL)
+    
+    # XÓA TRIỆT ĐỂ tất cả khối code khỏi văn bản hiển thị
+    clean_text = re.sub(code_pattern, "", content, flags=re.DOTALL).strip()
+    
+    # 1. Hiển thị phần lời văn / phân tích (Đã lọc sạch 100% code)
+    if clean_text:
+        st.markdown(clean_text)
+        
+    # 2. Chạy ngầm code Python để vẽ biểu đồ
+    if code_matches:
+        for code_block in code_matches:
+            if any(kw in code_block for kw in ["plotly", "px", "fig"]):
+                try:
+                    local_vars = {"sheets_dict": sheets_dict, "pd": pd, "px": px}
+                    exec(code_block, globals(), local_vars)
+                    if "fig" in local_vars:
+                        st.plotly_chart(local_vars["fig"], use_container_width=True)
+                except Exception:
+                    pass # Hoàn toàn không làm phiền người dùng nếu code bị lỗi
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN VÀ LUỒNG XỬ LÝ
@@ -313,7 +327,7 @@ with tab_chat:
             else:
                 st.markdown(msg["content"])
 
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ top 5 sản phẩm tồn kho nhiều nhất?")
+    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
 
     if st.button("🚀 Gửi câu hỏi", type="primary"):
         if question:
