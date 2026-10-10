@@ -306,7 +306,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         if text.strip():
             label = "Người dùng" if role == "user" else "Trợ lý"
             history_lines.append(f"{label}: {text}")
-    history_text = "\\n".join(history_lines) if history_lines else "(Chưa có lịch sử hội thoại.)"
+    history_text = "\n".join(history_lines) if history_lines else "(Chưa có lịch sử hội thoại.)"
 
     system_text = (
         "Bạn là trợ lý phân tích kho hàng. Chỉ dùng dữ liệu được cung cấp; không suy đoán hoặc tự tạo số liệu.\n"
