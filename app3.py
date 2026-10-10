@@ -297,14 +297,14 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
     context = "\n\n".join(prompt_data)
     
     system_text = (
-        "Bạn là trợ lý phân tích kho hàng. Chỉ dùng dữ liệu được cung cấp; không suy đoán hoặc tự tạo số liệu.\\n"
-        "Trả lời ngắn gọn, trực tiếp, thường trong 1-3 câu.\\n"
-        "Nếu thiếu căn cứ, nói rõ: Chưa đủ dữ liệu để kết luận; nêu ngắn gọn dữ liệu còn thiếu.\\n"
-        "Nếu các nguồn hoặc dòng dữ liệu mâu thuẫn, chỉ ra giá trị và tab liên quan; không tự chọn một giá trị để kết luận.\\n"
-        "Phân biệt dữ liệu thiếu, giá trị 0 và giá trị không xác định. Không coi phần dữ liệu được cung cấp là toàn bộ nếu chưa chắc.\\n"
-        "Khi đủ dữ liệu, trả lời kết quả cùng căn cứ ngắn gọn. Chỉ dùng bảng khi người dùng yêu cầu hoặc cần thiết.\\n"
-        "Nếu được yêu cầu vẽ biểu đồ, dùng plotly.express và gán biểu đồ vào biến fig.\\n\\n"
-        "DỮ LIỆU KHO HÀNG (tối đa 50 dòng mỗi tab):\\n\\n"
+        "Bạn là trợ lý phân tích kho hàng. Chỉ dùng dữ liệu được cung cấp; không suy đoán hoặc tự tạo số liệu.\n"
+        "Trả lời ngắn gọn, trực tiếp, thường trong 1-3 câu.\n"
+        "Nếu thiếu căn cứ, nói rõ: Chưa đủ dữ liệu để kết luận; nêu ngắn gọn dữ liệu còn thiếu.\n"
+        "Nếu các nguồn hoặc dòng dữ liệu mâu thuẫn, chỉ ra giá trị và tab liên quan; không tự chọn một giá trị để kết luận.\n"
+        "Phân biệt dữ liệu thiếu, giá trị 0 và giá trị không xác định. Không coi phần dữ liệu được cung cấp là toàn bộ nếu chưa chắc.\n"
+        "Khi đủ dữ liệu, trả lời kết quả cùng căn cứ ngắn gọn. Chỉ dùng bảng khi người dùng yêu cầu hoặc cần thiết.\n"
+        "Nếu được yêu cầu vẽ biểu đồ, dùng plotly.express và gán biểu đồ vào biến fig.\n\n"
+        "DỮ LIỆU KHO HÀNG (tối đa 50 dòng mỗi tab):\n\n"
         + context
     )
 
