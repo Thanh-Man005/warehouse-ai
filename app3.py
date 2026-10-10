@@ -603,13 +603,28 @@ with tab_chat:
             save_json_data(CHAT_PATH, st.session_state.messages)
 
             with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
-                local_answer, need_ai = auto_route_and_process(question, sheets_data)
+                # Câu hỏi nối tiếp cần giữ ngữ cảnh, không để bộ định tuyến trả lời độc lập.
+                recent_history = st.session_state.messages[:-1]
+                q_lower = question.lower().strip()
+                follow_up_markers = [
+                    "vậy", "thế còn", "còn ", "còn nữa", "như vậy", "trường hợp đó",
+                    "trường hợp này", "nó ", "mặt hàng đó", "loại đó", "tiếp theo",
+                    "so với", "cái đó", "ý tôi là", "ý là"
+                ]
+                is_follow_up = bool(recent_history) and any(
+                    marker in q_lower for marker in follow_up_markers
+                )
+
+                if is_follow_up:
+                    local_answer, need_ai = None, True
+                else:
+                    local_answer, need_ai = auto_route_and_process(question, sheets_data)
 
                 if not need_ai:
                     final_ans = local_answer
                 else:
                     try:
-                        final_ans = ask_ai(question, sheets_data, st.session_state.messages[:-1])
+                        final_ans = ask_ai(question, sheets_data, recent_history)
                     except Exception as e:
                         final_ans = f"❌ {str(e)}"
 
