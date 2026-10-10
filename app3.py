@@ -8,6 +8,7 @@ import requests
 import hashlib
 import plotly.express as px
 from pathlib import Path
+from core.router import auto_route_and_process
 
 # ── Cấu hình trang ──────────────────────────────────────────────────────────
 st.set_page_config(
@@ -253,7 +254,6 @@ if "data_source" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = load_json_data(CHAT_PATH, [])
 
-from core.router import auto_route_and_process
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE
