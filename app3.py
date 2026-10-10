@@ -62,7 +62,7 @@ def save_json_data(path: Path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ── Kết nối Supabase để dùng chung tài khoản với app Thanh ──────────────────
+# ── Kết nối Supabase (khóa chỉ được đọc từ Streamlit Secrets) ────────────────
 def get_supabase_settings():
     try:
         url = str(st.secrets.get("SUPABASE_URL", "")).strip().rstrip("/")
@@ -94,7 +94,7 @@ def supabase_get_users():
         timeout=15,
     )
     if not response.ok:
-        raise RuntimeError(f"Không đọc được tài khoản từ Supabase (HTTP {response.status_code}).")
+        raise RuntimeError(f"Không đọc được danh sách tài khoản từ Supabase (HTTP {response.status_code}).")
     return response.json()
 
 def supabase_insert_user(username, password_hash, role, fullname):
@@ -116,13 +116,13 @@ def supabase_insert_user(username, password_hash, role, fullname):
         raise RuntimeError(f"Không lưu được tài khoản vào Supabase (HTTP {response.status_code}).")
     return response.json()
 
-# Đọc tài khoản từ Supabase; chỉ chuyển tài khoản cũ nếu chưa trùng tên.
+# Chuyển tài khoản cũ sang Supabase nếu file users.json còn tồn tại.
+# Nếu chưa có dữ liệu cũ và bảng trống, tạo tài khoản khởi tạo admin/admin123.
 def init_users_data():
     rows = supabase_get_users()
     existing = {str(row.get("username", "")) for row in rows}
     legacy_users = load_json_data(USERS_PATH, {})
 
-    # Chỉ tạo admin mặc định nếu cả Supabase và dữ liệu cũ đều trống.
     if not rows and not legacy_users:
         legacy_users = {
             "admin": {
@@ -179,19 +179,22 @@ def render_login_screen():
             submit_btn = st.form_submit_button("Đăng Nhập", type="primary", use_container_width=True)
             
             if submit_btn:
-                users = init_users_data()
-                if username_input in users:
-                    hashed_pwd = hash_password(password_input)
-                    if users[username_input]["password"] == hashed_pwd:
-                        st.session_state.logged_in = True
-                        st.session_state.username = username_input
-                        st.session_state.user_role = users[username_input].get("role", "user")
-                        st.success("✅ Đăng nhập thành công!")
-                        st.rerun()
+                try:
+                    users = init_users_data()
+                    if username_input in users:
+                        hashed_pwd = hash_password(password_input)
+                        if users[username_input]["password"] == hashed_pwd:
+                            st.session_state.logged_in = True
+                            st.session_state.username = username_input
+                            st.session_state.user_role = users[username_input].get("role", "user")
+                            st.success("✅ Đăng nhập thành công!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Sai mật khẩu!")
                     else:
-                        st.error("❌ Sai mật khẩu!")
-                else:
-                    st.error("❌ Tài khoản không tồn tại!")
+                        st.error("❌ Tài khoản không tồn tại!")
+                except Exception as e:
+                    st.error(f"❌ Không thể kết nối cơ sở dữ liệu tài khoản: {e}")
 
 if not st.session_state.logged_in:
     render_login_screen()
@@ -199,19 +202,35 @@ if not st.session_state.logged_in:
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
+
 # ════════════════════════════════════════════════════════════════════════════
+
 saved_config = load_json_data(CONFIG_PATH, {
-    "api_key": "",
-    "data_source": "🌐 Link Google Trang tính",
-    "gsheet_url": ""
+"data_source": "🌐 Link Google Trang tính",
+"gsheet_url": ""
 })
 
-if "api_key" not in st.session_state:
-    st.session_state.api_key = saved_config.get("api_key", "")
+
+# Lấy Gemini API Key từ Streamlit Secrets, không nhập trực tiếp trong giao diện.
+def get_gemini_api_key() -> str:
+    try:
+        return str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+    except Exception:
+        return ""
+
+# Xóa API Key cũ khỏi cấu hình nếu trước đây đã lưu trong config.json.
+if "api_key" in saved_config:
+    saved_config.pop("api_key", None)
+    save_json_data(CONFIG_PATH, saved_config)
+
 if "gsheet_url" not in st.session_state:
     st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
+
 if "data_source" not in st.session_state:
-    st.session_state.data_source = saved_config.get("data_source", "🌐 Link Google Trang tính")
+    st.session_state.data_source = saved_config.get(
+        "data_source", "🌐 Link Google Trang tính"
+    )
+
 if "messages" not in st.session_state:
     st.session_state.messages = load_json_data(CHAT_PATH, [])
 
@@ -297,10 +316,14 @@ def load_all_sheets_from_file(path: str) -> dict:
     xl = pd.ExcelFile(path)
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
+
 def ask_ai(question: str, sheets_dict: dict) -> str:
-    api_key = st.session_state.get("api_key", "").strip()
+    api_key = get_gemini_api_key()
     if not api_key:
-        raise Exception("🔑 Chưa nhập API Key! Vui lòng dán API Key vào menu Cài đặt ở góc trái.")
+        raise Exception(
+            "🔑 Chưa cấu hình GEMINI_API_KEY trong "
+            "Streamlit Cloud → Settings → Secrets."
+        )
     
     prompt_data = []
     for name, df in sheets_dict.items():
@@ -409,15 +432,15 @@ with st.sidebar:
 
     st.divider()
 
-    # QUẢN TRỊ TÀI KHOẢN DÙNG CHUNG QUA SUPABASE
+    # TÍNH NĂNG CHỈ DÀNH CHO ADMIN: CẤP TÀI KHOẢN + DANH SÁCH
     if st.session_state.user_role == "admin":
         with st.expander("➕ Cấp tài khoản mới"):
-            new_user = st.text_input("Tên đăng nhập mới", key="h_new_user").strip()
-            new_fullname = st.text_input("Họ tên", key="h_new_fullname").strip()
-            new_pass = st.text_input("Mật khẩu mới", type="password", key="h_new_pass").strip()
-            new_role = st.selectbox("Quyền", ["user", "admin"], key="h_new_role")
+            new_user = st.text_input("Tên đăng nhập mới", key="new_user_supabase").strip()
+            new_fullname = st.text_input("Họ tên", key="new_fullname_supabase").strip()
+            new_pass = st.text_input("Mật khẩu mới", type="password", key="new_pass_supabase").strip()
+            new_role = st.selectbox("Quyền", ["user", "admin"], key="new_role_supabase")
 
-            if st.button("Tạo tài khoản", key="h_create_user"):
+            if st.button("Tạo tài khoản", key="create_supabase_user"):
                 if new_user and new_pass:
                     try:
                         users_data = init_users_data()
@@ -425,7 +448,9 @@ with st.sidebar:
                             st.error("Tài khoản đã tồn tại!")
                         else:
                             supabase_insert_user(
-                                new_user, hash_password(new_pass), new_role,
+                                new_user,
+                                hash_password(new_pass),
+                                new_role,
                                 new_fullname or new_user,
                             )
                             st.success(f"Đã tạo tài khoản {new_user} thành công!")
@@ -461,17 +486,17 @@ with st.sidebar:
                 st.error(f"Không tải được danh sách tài khoản: {e}")
         st.divider()
 
+
     st.markdown("## ⚙️ Cài đặt")
-    
-    api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
-    if api_key_input != st.session_state.api_key:
-        st.session_state.api_key = api_key_input
-        saved_config["api_key"] = api_key_input
-        save_json_data(CONFIG_PATH, saved_config)
+
+    if get_gemini_api_key():
+        st.success("🔑 Gemini API Key đã được cấu hình.")
+    else:
+        st.warning("🔑 Chưa tìm thấy GEMINI_API_KEY trong Streamlit Secrets.")
 
     st.divider()
     st.markdown("### 📂 Nguồn dữ liệu kho")
-    
+
     data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
     data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
     if data_source != st.session_state.data_source:
