@@ -311,6 +311,92 @@ def auto_route_and_process(question: str, sheets_dict: dict):
 
     return None, True
 
+
+def answer_followup_stock_extreme(question: str, sheets_dict: dict, chat_history=None):
+    """Tính tồn kho thấp/cao nhất trong đúng nhóm sản phẩm nêu ở câu trả lời ngay trước."""
+    q = question.lower()
+    refers_back = any(term in q for term in [
+        "các sản phẩm trên", "những sản phẩm trên", "các mặt hàng trên",
+        "những mặt hàng đó", "danh sách trên", "danh sách vừa rồi",
+        "trong số đó", "nhóm sản phẩm đó", "các sản phẩm đó",
+    ])
+    asks_extreme = any(term in q for term in [
+        "thấp nhất", "ít nhất", "tồn thấp", "tồn kho thấp nhất",
+        "cao nhất", "nhiều nhất", "tồn kho cao nhất",
+    ])
+    if not (refers_back and asks_extreme):
+        return None
+
+    previous_answer = next(
+        (str(msg.get("content", "")) for msg in reversed(chat_history or [])
+         if msg.get("role") == "assistant"),
+        "",
+    )
+    if not previous_answer:
+        return None
+
+    # Ưu tiên nội dung in đậm và các ô trong bảng Markdown của câu trả lời trước.
+    candidates = re.findall(r"\*\*(.*?)\*\*", previous_answer)
+    for line in previous_answer.splitlines():
+        if "|" in line and not re.match(r"^\s*\|?\s*:?-{2,}", line):
+            candidates.extend(cell.strip().strip("*` ") for cell in line.strip().strip("|").split("|"))
+
+    normalized_candidates = {
+        re.sub(r"\s+", " ", value).strip().casefold()
+        for value in candidates
+        if value and len(value.strip()) > 1
+    }
+    matched_rows = []
+    for sheet_name, df in sheets_dict.items():
+        stock_col = next(
+            (col for col in df.columns if any(key in str(col).lower() for key in
+             ["tồn kho", "tồn", "ton", "số lượng", "sl"])),
+            None,
+        )
+        name_cols = [
+            col for col in df.columns
+            if any(key in str(col).lower() for key in
+                   ["tên vật tư", "tên sản phẩm", "tên hàng", "vật tư", "mặt hàng", "sản phẩm", "mã vt", "mã sp", "mã hàng", "mã"])
+        ]
+        if not stock_col or not name_cols:
+            continue
+        df_work = df.copy()
+        df_work[stock_col] = pd.to_numeric(df_work[stock_col], errors="coerce")
+        for _, row in df_work.iterrows():
+            matched_by = []
+            for col in name_cols:
+                value = re.sub(r"\s+", " ", str(row[col])).strip().casefold()
+                if value and value != "nan" and value in normalized_candidates:
+                    matched_by.append(col)
+            if matched_by and pd.notna(row[stock_col]):
+                matched_rows.append({
+                    "sheet": sheet_name,
+                    "stock": float(row[stock_col]),
+                    "name": str(row[matched_by[0]]),
+                    "row": row,
+                    "stock_col": stock_col,
+                })
+
+    if not matched_rows:
+        return None
+
+    if any(term in q for term in ["cao nhất", "nhiều nhất", "tồn kho cao nhất"]):
+        target_value = max(item["stock"] for item in matched_rows)
+        label = "tồn kho cao nhất"
+    else:
+        target_value = min(item["stock"] for item in matched_rows)
+        label = "tồn kho thấp nhất"
+    winners = [item for item in matched_rows if item["stock"] == target_value]
+    lines = [
+        f"- **{item['name']}** (tab **{item['sheet']}**): còn **{item['stock']:g}**"
+        for item in winners
+    ]
+    return (
+        f"⚡ **[Đối chiếu trực tiếp trong nhóm sản phẩm ở câu trả lời trước]**\n\n"
+        f"Sản phẩm có {label} trong nhóm đã nêu:\n" + "\n".join(lines)
+    )
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE
 # ════════════════════════════════════════════════════════════════════════════
@@ -697,7 +783,13 @@ with tab_chat:
             save_json_data(CHAT_PATH, st.session_state.messages)
 
             with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
-                local_answer, need_ai = auto_route_and_process(question, sheets_data)
+                followup_answer = answer_followup_stock_extreme(
+                    question, sheets_data, chat_history=st.session_state.messages[:-1]
+                )
+                if followup_answer:
+                    local_answer, need_ai = followup_answer, False
+                else:
+                    local_answer, need_ai = auto_route_and_process(question, sheets_data)
 
                 if not need_ai:
                     final_ans = local_answer
