@@ -119,24 +119,37 @@ if not st.session_state.logged_in:
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
+
 # ════════════════════════════════════════════════════════════════════════════
+
 saved_config = load_json_data(CONFIG_PATH, {
-    "api_key": "",
-    "data_source": "🌐 Link Google Trang tính",
-    "gsheet_url": ""
+"data_source": "🌐 Link Google Trang tính",
+"gsheet_url": ""
 })
 
-if "api_key" not in st.session_state:
-    st.session_state.api_key = saved_config.get("api_key", "")
+# Lấy Gemini API Key từ Streamlit Secrets, không nhập trực tiếp trong giao diện.
+
+def get_gemini_api_key() -> str:
+try:
+return str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+except Exception:
+return ""
+
+# Xóa API Key cũ khỏi cấu hình nếu trước đây đã lưu trong config.json.
+
+if "api_key" in saved_config:
+saved_config.pop("api_key", None)
+save_json_data(CONFIG_PATH, saved_config)
+
 if "gsheet_url" not in st.session_state:
-    st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
+st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
 if "data_source" not in st.session_state:
-    st.session_state.data_source = saved_config.get("data_source", "🌐 Link Google Trang tính")
+st.session_state.data_source = saved_config.get("data_source", "🌐 Link Google Trang tính")
 if "messages" not in st.session_state:
-    st.session_state.messages = load_json_data(CHAT_PATH, [])
+st.session_state.messages = load_json_data(CHAT_PATH, [])
 
 def auto_route_and_process(question: str, sheets_dict: dict):
-    q_low = question.lower().strip()
+q_low = question.lower().strip()
 
     # Nhóm câu hỏi bắt buộc gửi cho AI phân tích sâu hoặc vẽ biểu đồ
     if any(k in q_low for k in ["biểu đồ", "vẽ biểu đồ", "đồ thị", "vẽ đồ thị", "bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất"]):
@@ -217,10 +230,14 @@ def load_all_sheets_from_file(path: str) -> dict:
     xl = pd.ExcelFile(path)
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
+
 def ask_ai(question: str, sheets_dict: dict) -> str:
-    api_key = st.session_state.get("api_key", "").strip()
+    api_key = get_gemini_api_key()
     if not api_key:
-        raise Exception("🔑 Chưa nhập API Key! Vui lòng dán API Key vào menu Cài đặt ở góc trái.")
+        raise Exception(
+            "🔑 Chưa cấu hình GEMINI_API_KEY trong "
+            "Streamlit Cloud → Settings → Secrets."
+        )
     
     prompt_data = []
     for name, df in sheets_dict.items():
@@ -355,11 +372,10 @@ with st.sidebar:
 
     st.markdown("## ⚙️ Cài đặt")
     
-    api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
-    if api_key_input != st.session_state.api_key:
-        st.session_state.api_key = api_key_input
-        saved_config["api_key"] = api_key_input
-        save_json_data(CONFIG_PATH, saved_config)
+if get_gemini_api_key():
+    st.success("🔑 Gemini API Key đã được cấu hình.")
+else:
+    st.warning("🔑 Chưa tìm thấy GEMINI_API_KEY trong Streamlit Secrets.")
 
     st.divider()
     st.markdown("### 📂 Nguồn dữ liệu kho")
