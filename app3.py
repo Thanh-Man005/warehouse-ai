@@ -594,6 +594,7 @@ with tab_data:
     st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
 
 with tab_chat:
+    st.caption(f"🧠 Lịch sử hội thoại trong phiên này: {len(st.session_state.messages)} tin nhắn")
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): 
             if msg["role"] == "assistant":
