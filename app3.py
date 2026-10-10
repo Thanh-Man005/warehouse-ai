@@ -373,16 +373,17 @@ with st.sidebar:
                     st.warning("Vui lòng điền đầy đủ thông tin!")
         st.divider()
 
+
     st.markdown("## ⚙️ Cài đặt")
-    
-if get_gemini_api_key():
-    st.success("🔑 Gemini API Key đã được cấu hình.")
-else:
-    st.warning("🔑 Chưa tìm thấy GEMINI_API_KEY trong Streamlit Secrets.")
+
+    if get_gemini_api_key():
+        st.success("🔑 Gemini API Key đã được cấu hình.")
+    else:
+        st.warning("🔑 Chưa tìm thấy GEMINI_API_KEY trong Streamlit Secrets.")
 
     st.divider()
     st.markdown("### 📂 Nguồn dữ liệu kho")
-    
+
     data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
     data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
     if data_source != st.session_state.data_source:
