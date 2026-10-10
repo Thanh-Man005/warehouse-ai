@@ -116,6 +116,25 @@ def supabase_insert_user(username, password_hash, role, fullname):
         raise RuntimeError(f"Không lưu được tài khoản vào Supabase (HTTP {response.status_code}).")
     return response.json()
 
+def supabase_update_user(username, updates):
+    """Cập nhật thông tin tài khoản theo username trong Supabase."""
+    if not updates:
+        raise ValueError("Chưa có thông tin nào cần cập nhật.")
+    url, _ = get_supabase_settings()
+    response = requests.patch(
+        f"{url}/rest/v1/app_users",
+        headers={**supabase_headers(), "Prefer": "return=representation"},
+        params={"username": f"eq.{username}"},
+        json=updates,
+        timeout=15,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không cập nhật được tài khoản (HTTP {response.status_code}).")
+    updated_rows = response.json()
+    if not updated_rows:
+        raise RuntimeError("Không tìm thấy tài khoản cần cập nhật.")
+    return updated_rows[0]
+
 # Chuyển tài khoản cũ sang Supabase nếu file users.json còn tồn tại.
 # Nếu chưa có dữ liệu cũ và bảng trống, tạo tài khoản khởi tạo admin/admin123.
 def init_users_data():
@@ -484,6 +503,64 @@ with st.sidebar:
                     st.info("Chưa có tài khoản nào trong Supabase.")
             except Exception as e:
                 st.error(f"Không tải được danh sách tài khoản: {e}")
+        with st.expander("🛠️ Quản lý tài khoản", expanded=False):
+            try:
+                managed_users = supabase_get_users()
+                if not managed_users:
+                    st.info("Chưa có tài khoản để quản lý.")
+                else:
+                    user_options = [row.get("username", "") for row in managed_users]
+                    selected_user = st.selectbox(
+                        "Chọn tài khoản cần chỉnh sửa",
+                        user_options,
+                        key="manage_user_select",
+                    )
+                    selected_record = next(
+                        (row for row in managed_users if row.get("username") == selected_user),
+                        {},
+                    )
+                    with st.form("manage_account_form"):
+                        edit_fullname = st.text_input(
+                            "Họ tên",
+                            value=selected_record.get("fullname") or selected_user,
+                        ).strip()
+                        edit_role = st.selectbox(
+                            "Quyền tài khoản",
+                            ["user", "admin"],
+                            index=0 if selected_record.get("role", "user") == "user" else 1,
+                        )
+                        reset_password = st.text_input(
+                            "Mật khẩu mới (để trống nếu không đổi)",
+                            type="password",
+                        ).strip()
+                        save_account = st.form_submit_button(
+                            "Lưu thay đổi", type="primary", use_container_width=True
+                        )
+
+                    if save_account:
+                        current_role = selected_record.get("role", "user")
+                        admin_count = sum(1 for row in managed_users if row.get("role") == "admin")
+                        if selected_user == st.session_state.username and edit_role != "admin":
+                            st.error("Không thể tự hạ quyền admin của tài khoản đang đăng nhập.")
+                        elif current_role == "admin" and edit_role != "admin" and admin_count <= 1:
+                            st.error("Không thể hạ quyền admin cuối cùng của hệ thống.")
+                        elif reset_password and len(reset_password) < 6:
+                            st.error("Mật khẩu mới phải có ít nhất 6 ký tự.")
+                        else:
+                            updates = {
+                                "fullname": edit_fullname or selected_user,
+                                "role": edit_role,
+                            }
+                            if reset_password:
+                                updates["password_hash"] = hash_password(reset_password)
+                            try:
+                                supabase_update_user(selected_user, updates)
+                                st.success(f"Đã cập nhật tài khoản {selected_user}.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Không thể cập nhật tài khoản: {e}")
+            except Exception as e:
+                st.error(f"Không tải được dữ liệu quản lý tài khoản: {e}")
         st.divider()
 
 
