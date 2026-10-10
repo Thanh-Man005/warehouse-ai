@@ -222,7 +222,6 @@ if not st.session_state.logged_in:
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
-
 # ════════════════════════════════════════════════════════════════════════════
 
 saved_config = load_json_data(CONFIG_PATH, {
@@ -304,7 +303,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         "Phân biệt dữ liệu thiếu, giá trị 0 và giá trị không xác định. Không coi phần dữ liệu được cung cấp là toàn bộ nếu chưa chắc.\n"
         "Khi đủ dữ liệu, trả lời kết quả cùng căn cứ ngắn gọn. Chỉ dùng bảng khi người dùng yêu cầu hoặc cần thiết.\n"
         "Nếu được yêu cầu vẽ biểu đồ, dùng plotly.express và gán biểu đồ vào biến fig.\n"
-        "Dùng các lượt hội thoại trước để hiểu câu hỏi nối tiếp; câu trả lời cũ không thay thế dữ liệu kho hiện tại.\n\n"
+        "QUY TẮC NỐI TIẾP: Đọc kỹ các lượt hội thoại trước trong lịch sử. Khi người dùng đặt câu hỏi ngắn hoặc câu hỏi nối tiếp (ví dụ: 'Vậy còn sản phẩm B?', 'Thế còn C?'), bạn phải tự suy luận ý định dựa vào câu hỏi liền trước (ví dụ: hiểu thành 'Sản phẩm B nhập bao nhiêu?'). Câu trả lời cũ không thay thế dữ liệu kho hiện tại.\n\n"
         "DỮ LIỆU KHO HÀNG (tối đa 50 dòng mỗi tab):\n\n"
         + context
     )
@@ -316,7 +315,10 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         role = msg.get("role", "")
         if role not in ("user", "assistant"):
             continue
-        text = str(msg.get("content", ""))[:2000].strip()
+        text = str(msg.get("content", "")).strip()
+        # SỬA LỖI 1: Lọc bỏ header AI rác khỏi lịch sử trước khi gửi cho Gemini
+        text = re.sub(r"^🤖\s*\*\*\[Phân tích bởi AI\s*\([^)]+\)\]\*\*\s*", "", text).strip()
+        text = text[:2000].strip()
         if not text:
             continue
         gemini_role = "user" if role == "user" else "model"
@@ -526,118 +528,4 @@ with st.sidebar:
                                 st.success(f"Đã cập nhật tài khoản {selected_user}.")
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Không thể cập nhật tài khoản: {e}")
-            except Exception as e:
-                st.error(f"Không tải được dữ liệu quản lý tài khoản: {e}")
-        st.divider()
-
-
-    st.markdown("## ⚙️ Cài đặt")
-
-    if get_gemini_api_key():
-        st.success("🔑 Gemini API Key đã được cấu hình.")
-    else:
-        st.warning("🔑 Chưa tìm thấy GEMINI_API_KEY trong Streamlit Secrets.")
-
-    st.divider()
-    st.markdown("### 📂 Nguồn dữ liệu kho")
-
-    data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
-    data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
-    if data_source != st.session_state.data_source:
-        st.session_state.data_source = data_source
-        saved_config["data_source"] = data_source
-        save_json_data(CONFIG_PATH, saved_config)
-
-    sheets_data = None
-    if data_source == "🌐 Link Google Trang tính":
-        gsheet_url_input = st.text_input("Dán link Google Sheet:", value=st.session_state.gsheet_url)
-        if gsheet_url_input != st.session_state.gsheet_url:
-            st.session_state.gsheet_url = gsheet_url_input
-            saved_config["gsheet_url"] = gsheet_url_input
-            save_json_data(CONFIG_PATH, saved_config)
-
-        if st.session_state.gsheet_url:
-            try:
-                sheets_data = load_all_sheets_from_gsheet(st.session_state.gsheet_url)
-                st.success(f"✅ Kết nối thành công {len(sheets_data)} tab!")
-            except Exception:
-                st.error("❌ Lỗi đọc Google Sheet!")
-    else:
-        uploaded = st.file_uploader("Tải file Excel", type=["xlsx", "xls"])
-        if uploaded:
-            EXCEL_PATH.write_bytes(uploaded.read())
-            st.cache_data.clear()
-            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
-            st.success("✅ Đã lưu file Excel mới!")
-        elif EXCEL_PATH.exists():
-            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
-            st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
-
-    st.divider()
-    if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
-        st.session_state.messages = []
-        save_json_data(CHAT_PATH, [])
-        st.rerun()
-
-# ── GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH ─────────────────────────────────────────
-st.markdown("# 🏭 AI Quản Lý Kho Hàng")
-
-if not sheets_data:
-    st.info("👈 Vui lòng dán Link Google Sheet hoặc tải file Excel ở sidebar trái.")
-    st.stop()
-
-tab_data, tab_chat = st.tabs(["📊 Xem dữ liệu", "💬 Hỏi đáp Thông Minh"])
-
-with tab_data:
-    selected_tab = st.selectbox("Chọn Tab:", list(sheets_data.keys()))
-    st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
-
-with tab_chat:
-    st.caption(f"🧠 Lịch sử hội thoại trong phiên này: {len(st.session_state.messages)} tin nhắn")
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]): 
-            if msg["role"] == "assistant":
-                render_message_and_chart(msg["content"], sheets_data)
-            else:
-                st.markdown(msg["content"])
-
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
-
-    if st.button("🚀 Gửi câu hỏi", type="primary"):
-        if question:
-            with st.chat_message("user"): 
-                st.markdown(question)
-            
-            st.session_state.messages.append({"role": "user", "content": question})
-            save_json_data(CHAT_PATH, st.session_state.messages)
-
-            with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
-                # Câu hỏi nối tiếp cần giữ ngữ cảnh, không để bộ định tuyến trả lời độc lập.
-                recent_history = st.session_state.messages[:-1]
-                q_lower = question.lower().strip()
-                follow_up_markers = [
-                    "vậy", "thế còn", "còn ", "còn nữa", "như vậy", "trường hợp đó",
-                    "trường hợp này", "nó ", "mặt hàng đó", "loại đó", "tiếp theo",
-                    "so với", "cái đó", "ý tôi là", "ý là"
-                ]
-                is_follow_up = bool(recent_history)
-
-                if is_follow_up:
-                    local_answer, need_ai = None, True
-                else:
-                    local_answer, need_ai = auto_route_and_process(question, sheets_data)
-
-                if not need_ai:
-                    final_ans = local_answer
-                else:
-                    try:
-                        final_ans = ask_ai(question, sheets_data, recent_history)
-                    except Exception as e:
-                        final_ans = f"❌ {str(e)}"
-
-                with st.chat_message("assistant"):
-                    render_message_and_chart(final_ans, sheets_data)
-                
-                st.session_state.messages.append({"role": "assistant", "content": final_ans})
-                save_json_data(CHAT_PATH, st.session_state.messages)
+                                st.error
