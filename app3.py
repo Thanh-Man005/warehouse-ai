@@ -296,18 +296,6 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             
     context = "\n\n".join(prompt_data)
     
-    # Chỉ gửi tối đa 10 tin nhắn gần nhất; giới hạn mỗi tin nhắn 2.000 ký tự.
-    history_lines = []
-    for msg in (chat_history or [])[-10:]:
-        role = msg.get("role", "")
-        if role not in ("user", "assistant"):
-            continue
-        text = str(msg.get("content", ""))[:2000]
-        if text.strip():
-            label = "Người dùng" if role == "user" else "Trợ lý"
-            history_lines.append(f"{label}: {text}")
-    history_text = "\n".join(history_lines) if history_lines else "(Chưa có lịch sử hội thoại.)"
-
     system_text = (
         "Bạn là trợ lý phân tích kho hàng. Chỉ dùng dữ liệu được cung cấp; không suy đoán hoặc tự tạo số liệu.\n"
         "Trả lời ngắn gọn, trực tiếp, thường trong 1-3 câu.\n"
@@ -316,15 +304,36 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         "Phân biệt dữ liệu thiếu, giá trị 0 và giá trị không xác định. Không coi phần dữ liệu được cung cấp là toàn bộ nếu chưa chắc.\n"
         "Khi đủ dữ liệu, trả lời kết quả cùng căn cứ ngắn gọn. Chỉ dùng bảng khi người dùng yêu cầu hoặc cần thiết.\n"
         "Nếu được yêu cầu vẽ biểu đồ, dùng plotly.express và gán biểu đồ vào biến fig.\n"
-        "Dùng lịch sử hội thoại để hiểu câu hỏi tiếp nối; không coi câu trả lời cũ của trợ lý là dữ liệu đã được xác minh. Dữ liệu kho hiện tại là căn cứ chính.\n\n"
-        "LỊCH SỬ HỘI THOẠI GẦN ĐÂY (tối đa 10 tin nhắn, mỗi tin tối đa 2.000 ký tự):\n"
-        + history_text + "\n\n"
+        "Dùng các lượt hội thoại trước để hiểu câu hỏi nối tiếp; câu trả lời cũ không thay thế dữ liệu kho hiện tại.\n\n"
         "DỮ LIỆU KHO HÀNG (tối đa 50 dòng mỗi tab):\n\n"
         + context
     )
 
+    # Gửi lịch sử theo đúng định dạng hội thoại của Gemini: user/model.
+    # Tối đa 10 tin trước đó, mỗi tin tối đa 2.000 ký tự.
+    contents = []
+    for msg in (chat_history or [])[-10:]:
+        role = msg.get("role", "")
+        if role not in ("user", "assistant"):
+            continue
+        text = str(msg.get("content", ""))[:2000].strip()
+        if not text:
+            continue
+        gemini_role = "user" if role == "user" else "model"
+        # Gemini mong đợi luân phiên user/model; gộp liền kề cùng vai trò.
+        if contents and contents[-1]["role"] == gemini_role:
+            contents[-1]["parts"][0]["text"] += "\n\n" + text
+        else:
+            contents.append({"role": gemini_role, "parts": [{"text": text}]})
+
+    # Bắt đầu lịch sử bằng lượt user để tránh gửi chuỗi hội thoại không hợp lệ.
+    while contents and contents[0]["role"] != "user":
+        contents.pop(0)
+    contents.append({"role": "user", "parts": [{"text": question}]})
+
     body = {
-        "contents": [{"role": "user", "parts": [{"text": system_text + "\n\nCÂU HỎI CỦA NGƯỜI DÙNG: " + question}]}],
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": contents,
         "generationConfig": {
             "maxOutputTokens": 8192,
             "temperature": 0.2
