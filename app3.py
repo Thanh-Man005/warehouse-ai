@@ -620,9 +620,7 @@ with tab_chat:
                     "trường hợp này", "nó ", "mặt hàng đó", "loại đó", "tiếp theo",
                     "so với", "cái đó", "ý tôi là", "ý là"
                 ]
-                is_follow_up = bool(recent_history) and any(
-                    marker in q_lower for marker in follow_up_markers
-                )
+                is_follow_up = bool(recent_history)
 
                 if is_follow_up:
                     local_answer, need_ai = None, True
