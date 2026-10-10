@@ -280,7 +280,7 @@ def load_all_sheets_from_file(path: str) -> dict:
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
 
-def ask_ai(question: str, sheets_dict: dict) -> str:
+def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     api_key = get_gemini_api_key()
     if not api_key:
         raise Exception(
@@ -296,6 +296,18 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
             
     context = "\n\n".join(prompt_data)
     
+    # Chỉ gửi tối đa 10 tin nhắn gần nhất; giới hạn mỗi tin nhắn 2.000 ký tự.
+    history_lines = []
+    for msg in (chat_history or [])[-10:]:
+        role = msg.get("role", "")
+        if role not in ("user", "assistant"):
+            continue
+        text = str(msg.get("content", ""))[:2000]
+        if text.strip():
+            label = "Người dùng" if role == "user" else "Trợ lý"
+            history_lines.append(f"{label}: {text}")
+    history_text = "\\n".join(history_lines) if history_lines else "(Chưa có lịch sử hội thoại.)"
+
     system_text = (
         "Bạn là trợ lý phân tích kho hàng. Chỉ dùng dữ liệu được cung cấp; không suy đoán hoặc tự tạo số liệu.\n"
         "Trả lời ngắn gọn, trực tiếp, thường trong 1-3 câu.\n"
@@ -303,7 +315,10 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
         "Nếu các nguồn hoặc dòng dữ liệu mâu thuẫn, chỉ ra giá trị và tab liên quan; không tự chọn một giá trị để kết luận.\n"
         "Phân biệt dữ liệu thiếu, giá trị 0 và giá trị không xác định. Không coi phần dữ liệu được cung cấp là toàn bộ nếu chưa chắc.\n"
         "Khi đủ dữ liệu, trả lời kết quả cùng căn cứ ngắn gọn. Chỉ dùng bảng khi người dùng yêu cầu hoặc cần thiết.\n"
-        "Nếu được yêu cầu vẽ biểu đồ, dùng plotly.express và gán biểu đồ vào biến fig.\n\n"
+        "Nếu được yêu cầu vẽ biểu đồ, dùng plotly.express và gán biểu đồ vào biến fig.\n"
+        "Dùng lịch sử hội thoại để hiểu câu hỏi tiếp nối; không coi câu trả lời cũ của trợ lý là dữ liệu đã được xác minh. Dữ liệu kho hiện tại là căn cứ chính.\n\n"
+        "LỊCH SỬ HỘI THOẠI GẦN ĐÂY (tối đa 10 tin nhắn, mỗi tin tối đa 2.000 ký tự):\n"
+        + history_text + "\n\n"
         "DỮ LIỆU KHO HÀNG (tối đa 50 dòng mỗi tab):\n\n"
         + context
     )
@@ -594,7 +609,7 @@ with tab_chat:
                     final_ans = local_answer
                 else:
                     try:
-                        final_ans = ask_ai(question, sheets_data)
+                        final_ans = ask_ai(question, sheets_data, st.session_state.messages[:-1])
                     except Exception as e:
                         final_ans = f"❌ {str(e)}"
 
