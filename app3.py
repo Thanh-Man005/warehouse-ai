@@ -127,29 +127,32 @@ saved_config = load_json_data(CONFIG_PATH, {
 "gsheet_url": ""
 })
 
-# Lấy Gemini API Key từ Streamlit Secrets, không nhập trực tiếp trong giao diện.
 
+# Lấy Gemini API Key từ Streamlit Secrets, không nhập trực tiếp trong giao diện.
 def get_gemini_api_key() -> str:
-try:
-return str(st.secrets.get("GEMINI_API_KEY", "")).strip()
-except Exception:
-return ""
+    try:
+        return str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+    except Exception:
+        return ""
 
 # Xóa API Key cũ khỏi cấu hình nếu trước đây đã lưu trong config.json.
-
 if "api_key" in saved_config:
-saved_config.pop("api_key", None)
-save_json_data(CONFIG_PATH, saved_config)
+    saved_config.pop("api_key", None)
+    save_json_data(CONFIG_PATH, saved_config)
 
 if "gsheet_url" not in st.session_state:
-st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
+    st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
+
 if "data_source" not in st.session_state:
-st.session_state.data_source = saved_config.get("data_source", "🌐 Link Google Trang tính")
+    st.session_state.data_source = saved_config.get(
+        "data_source", "🌐 Link Google Trang tính"
+    )
+
 if "messages" not in st.session_state:
-st.session_state.messages = load_json_data(CHAT_PATH, [])
+    st.session_state.messages = load_json_data(CHAT_PATH, [])
 
 def auto_route_and_process(question: str, sheets_dict: dict):
-q_low = question.lower().strip()
+    q_low = question.lower().strip()
 
     # Nhóm câu hỏi bắt buộc gửi cho AI phân tích sâu hoặc vẽ biểu đồ
     if any(k in q_low for k in ["biểu đồ", "vẽ biểu đồ", "đồ thị", "vẽ đồ thị", "bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất"]):
