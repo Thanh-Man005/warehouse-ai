@@ -62,20 +62,100 @@ def save_json_data(path: Path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Khởi tạo tài khoản mặc định nếu chưa có file users.json
+# ── Kết nối Supabase để dùng chung tài khoản với app Thanh ──────────────────
+def get_supabase_settings():
+    try:
+        url = str(st.secrets.get("SUPABASE_URL", "")).strip().rstrip("/")
+        key = str(st.secrets.get("SUPABASE_KEY", "")).strip()
+    except Exception:
+        url, key = "", ""
+    if not url or not key:
+        raise RuntimeError(
+            "Chưa cấu hình SUPABASE_URL và SUPABASE_KEY trong "
+            "Streamlit Cloud → Settings → Secrets."
+        )
+    return url, key
+
+def supabase_headers():
+    _, key = get_supabase_settings()
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+def supabase_get_users():
+    url, _ = get_supabase_settings()
+    response = requests.get(
+        f"{url}/rest/v1/app_users",
+        headers=supabase_headers(),
+        params={"select": "username,password_hash,role,fullname,created_at", "order": "created_at.asc"},
+        timeout=15,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không đọc được tài khoản từ Supabase (HTTP {response.status_code}).")
+    return response.json()
+
+def supabase_insert_user(username, password_hash, role, fullname):
+    url, _ = get_supabase_settings()
+    response = requests.post(
+        f"{url}/rest/v1/app_users",
+        headers={**supabase_headers(), "Prefer": "return=representation"},
+        json={
+            "username": username,
+            "password_hash": password_hash,
+            "role": role,
+            "fullname": fullname or username,
+        },
+        timeout=15,
+    )
+    if not response.ok:
+        if response.status_code == 409:
+            raise ValueError("Tài khoản đã tồn tại!")
+        raise RuntimeError(f"Không lưu được tài khoản vào Supabase (HTTP {response.status_code}).")
+    return response.json()
+
+# Đọc tài khoản từ Supabase; chỉ chuyển tài khoản cũ nếu chưa trùng tên.
 def init_users_data():
-    users = load_json_data(USERS_PATH, {})
-    if not users:
-        # Tạo tài khoản Admin mặc định: admin / admin123
-        users = {
+    rows = supabase_get_users()
+    existing = {str(row.get("username", "")) for row in rows}
+    legacy_users = load_json_data(USERS_PATH, {})
+
+    # Chỉ tạo admin mặc định nếu cả Supabase và dữ liệu cũ đều trống.
+    if not rows and not legacy_users:
+        legacy_users = {
             "admin": {
                 "password": hash_password("admin123"),
                 "role": "admin",
-                "fullname": "Quản trị viên"
+                "fullname": "Quản trị viên",
             }
         }
-        save_json_data(USERS_PATH, users)
-    return users
+
+    for username, record in legacy_users.items():
+        if username in existing:
+            continue
+        password_hash = record.get("password") or record.get("password_hash")
+        if not password_hash:
+            continue
+        supabase_insert_user(
+            username,
+            password_hash,
+            record.get("role", "user"),
+            record.get("fullname", username),
+        )
+        existing.add(username)
+
+    rows = supabase_get_users()
+    return {
+        row["username"]: {
+            "password": row["password_hash"],
+            "role": row.get("role", "user"),
+            "fullname": row.get("fullname") or row["username"],
+            "created_at": row.get("created_at", ""),
+        }
+        for row in rows
+    }
 
 # Khởi tạo trạng thái Session State
 if "logged_in" not in st.session_state:
@@ -329,28 +409,56 @@ with st.sidebar:
 
     st.divider()
 
-    # TÍNH NĂNG CHỈ DÀNH CHO ADMIN: CẤP TÀI KHOẢN MỚI
+    # QUẢN TRỊ TÀI KHOẢN DÙNG CHUNG QUA SUPABASE
     if st.session_state.user_role == "admin":
         with st.expander("➕ Cấp tài khoản mới"):
-            new_user = st.text_input("Tên đăng nhập mới").strip()
-            new_pass = st.text_input("Mật khẩu mới", type="password").strip()
-            new_role = st.selectbox("Quyền", ["user", "admin"])
-            
-            if st.button("Tạo tài khoản"):
+            new_user = st.text_input("Tên đăng nhập mới", key="h_new_user").strip()
+            new_fullname = st.text_input("Họ tên", key="h_new_fullname").strip()
+            new_pass = st.text_input("Mật khẩu mới", type="password", key="h_new_pass").strip()
+            new_role = st.selectbox("Quyền", ["user", "admin"], key="h_new_role")
+
+            if st.button("Tạo tài khoản", key="h_create_user"):
                 if new_user and new_pass:
-                    users_data = load_json_data(USERS_PATH, {})
-                    if new_user in users_data:
-                        st.error("Tài khoản đã tồn tại!")
-                    else:
-                        users_data[new_user] = {
-                            "password": hash_password(new_pass),
-                            "role": new_role,
-                            "fullname": new_user
-                        }
-                        save_json_data(USERS_PATH, users_data)
-                        st.success(f"✅ Đã tạo tài khoản `{new_user}` thành công!")
+                    try:
+                        users_data = init_users_data()
+                        if new_user in users_data:
+                            st.error("Tài khoản đã tồn tại!")
+                        else:
+                            supabase_insert_user(
+                                new_user, hash_password(new_pass), new_role,
+                                new_fullname or new_user,
+                            )
+                            st.success(f"Đã tạo tài khoản {new_user} thành công!")
+                            st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"Không thể tạo tài khoản: {e}")
                 else:
-                    st.warning("Vui lòng điền đầy đủ thông tin!")
+                    st.warning("Vui lòng điền tên đăng nhập và mật khẩu!")
+
+        with st.expander("📋 Danh sách tài khoản đã cấp", expanded=True):
+            try:
+                account_rows = supabase_get_users()
+                if account_rows:
+                    st.dataframe(
+                        [
+                            {
+                                "Tên đăng nhập": row.get("username", ""),
+                                "Họ tên": row.get("fullname") or row.get("username", ""),
+                                "Quyền": row.get("role", "user"),
+                                "Ngày tạo": row.get("created_at", ""),
+                            }
+                            for row in account_rows
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    st.caption(f"Tổng số tài khoản: {len(account_rows)}")
+                else:
+                    st.info("Chưa có tài khoản nào trong Supabase.")
+            except Exception as e:
+                st.error(f"Không tải được danh sách tài khoản: {e}")
         st.divider()
 
     st.markdown("## ⚙️ Cài đặt")
