@@ -8,7 +8,6 @@ import requests
 import hashlib
 import plotly.express as px
 from pathlib import Path
-from core.router import auto_route_and_process
 
 # ── Cấu hình trang ──────────────────────────────────────────────────────────
 st.set_page_config(
@@ -222,6 +221,7 @@ if not st.session_state.logged_in:
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
+
 # ════════════════════════════════════════════════════════════════════════════
 
 saved_config = load_json_data(CONFIG_PATH, {
@@ -253,6 +253,63 @@ if "data_source" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = load_json_data(CHAT_PATH, [])
 
+def auto_route_and_process(question: str, sheets_dict: dict):
+    q_low = question.lower().strip()
+
+    # Nhóm câu hỏi bắt buộc gửi cho AI phân tích sâu hoặc vẽ biểu đồ
+    if any(k in q_low for k in ["biểu đồ", "vẽ biểu đồ", "đồ thị", "vẽ đồ thị", "bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất"]):
+        return None, True 
+
+    # 1. Tra cứu tồn ít / sắp hết (0 Token)
+    if any(k in q_low for k in ["sắp hết", "tồn ít", "cảnh báo", "hết hàng", "thiếu hàng"]):
+        results = []
+        for name, df in sheets_dict.items():
+            stock_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["ton", "số lượng", "sl", "tồn kho"])), None)
+            name_col  = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã"])), None)
+            
+            if stock_col and name_col:
+                df_clean = df.dropna(subset=[stock_col]).copy()
+                df_clean[stock_col] = pd.to_numeric(df_clean[stock_col], errors='coerce')
+                low_df = df_clean[df_clean[stock_col] <= 20]
+                
+                if not low_df.empty:
+                    items = [f"- **{row[name_col]}**: còn `{row[stock_col]}`" for _, row in low_df.head(10).iterrows()]
+                    results.append(f"📌 **Tab [{name}] có {len(low_df)} mặt hàng tồn ít (<=20):**\n" + "\n".join(items))
+        if results:
+            return "⚡ **[Tự động xử lý - 0 Token]**\n\n" + "\n\n".join(results), False
+        return "⚡ **[Tự động xử lý - 0 Token]**: Tất cả mặt hàng đều an toàn (tồn kho > 20).", False
+
+    # 2. Tính tổng giá trị kho (0 Token)
+    elif any(k in q_low for k in ["tổng giá trị", "tổng tiền", "giá trị kho", "tổng vốn"]):
+        total_val = 0
+        details = []
+        for name, df in sheets_dict.items():
+            val_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["thành tiền", "giá trị", "tổng tiền"])), None)
+            if val_col:
+                s = pd.to_numeric(df[val_col], errors='coerce').sum()
+                if s > 0:
+                    total_val += s
+                    details.append(f"- Tab **{name}**: `{s:,.0f} VNĐ`")
+        if details:
+            msg = f"⚡ **[Tự động xử lý - 0 Token]**\n\n💰 **Tổng giá trị kho:** `{total_val:,.0f} VNĐ`\n\nChi tiết từng tab:\n" + "\n".join(details)
+            return msg, False
+
+    # 3. Tra cứu tồn kho tổng quát (0 Token)
+    elif any(k in q_low for k in ["còn chính xác bao nhiêu", "còn bao nhiêu", "số lượng còn", "số lượng trong kho"]):
+        found_rows = []
+        for name, df in sheets_dict.items():
+            stock_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["ton", "số lượng", "sl", "tồn kho"])), None)
+            name_col  = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã sp", "mã"])), None)
+            
+            if stock_col and name_col:
+                df_clean = df.dropna(subset=[stock_col, name_col]).copy()
+                for _, row in df_clean.head(15).iterrows():
+                    found_rows.append(f"- **{row[name_col]}** (Tab `{name}`): còn `{row[stock_col]}` đơn vị")
+        
+        if found_rows:
+            return "⚡ **[Tự động tra cứu kho - 0 Token]**\n\n" + "\n".join(found_rows), False
+
+    return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 2 — XỬ LÝ DỮ LIỆU & GỌI AI GOOGLE
@@ -295,61 +352,44 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             
     context = "\n\n".join(prompt_data)
     
-
-system_text = (
-    "Bạn là trợ lý phân tích kho hàng thông minh.\n\n"
-
-    "QUY TẮC HIỂU NGỮ CẢNH VÀ THAM CHIẾU:\n"
-    "1. Sử dụng lịch sử hội thoại thực tế được cung cấp trong yêu cầu hiện tại.\n"
-    "2. Khi người dùng nói 'các sản phẩm trên', 'danh sách trên', "
-    "'mặt hàng đó' hoặc các cụm từ tương tự, hãy xác định sản phẩm "
-    "từ ngữ cảnh trước đó và tra cứu lại trong dữ liệu kho hiện tại.\n"
-    "3. Không tự suy đoán tên hoặc mã sản phẩm nếu lịch sử không đủ "
-    "thông tin để xác định chính xác.\n\n"
-
-    "QUY TẮC TRA CỨU ĐƠN GIÁ:\n"
-    "1. Khi người dùng hỏi 'đơn giá', 'giá bao nhiêu', 'giá đơn chiếc' "
-    "hoặc cách diễn đạt tương tự, hãy kiểm tra các cột đơn giá "
-    "thực tế có trong dữ liệu được cung cấp.\n"
-    "2. Nếu có nhiều loại đơn giá liên quan, hãy trình bày đầy đủ "
-    "các loại có dữ liệu, kèm tên cột và đơn vị nếu có.\n"
-    "3. Không tự gán ý nghĩa cho cột chưa rõ ràng, không tự tính "
-    "giá trị nếu chưa có căn cứ và không bịa dữ liệu.\n"
-    "4. Nếu không tìm thấy cột hoặc sản phẩm phù hợp, hãy nói rõ "
-    "điều gì chưa tìm thấy.\n\n"
-
-    "NGUYÊN TẮC TRẢ LỜI:\n"
-    "- Trả lời thẳng vào kết quả, ngắn gọn và rõ ràng.\n"
-    "- Chỉ sử dụng dữ liệu kho và lịch sử hội thoại được cung cấp.\n"
-    "- Phân biệt dữ liệu thực tế với nhận xét hoặc suy luận.\n"
-    "- Không khẳng định đã tra cứu toàn bộ kho nếu dữ liệu cung cấp "
-    "chỉ là một phần.\n\n"
-
-    "DỮ LIỆU KHO HÀNG:\n\n"
-    + context
+    system_text = (
+        "Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu kho hàng hiện tại (tối đa 50 dòng):\n\n"
+        + context + "\n\n"
+        "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
+        "1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.\n"
+        "2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:\n"
+        "| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "3. Trả lời trực tiếp vào trọng tâm câu hỏi.\n"
+        "4. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
     )
 
-    # Gửi lịch sử theo đúng định dạng hội thoại của Gemini: user/model.
-    # Tối đa 10 tin trước đó, mỗi tin tối đa 2.000 ký tự.
+    # Gửi tối đa 10 tin nhắn trước đó cho Gemini để giữ ngữ cảnh hội thoại.
+    # Mỗi tin được giới hạn 2.000 ký tự để tránh gửi lịch sử quá dài.
     contents = []
     for msg in (chat_history or [])[-10:]:
         role = msg.get("role", "")
         if role not in ("user", "assistant"):
             continue
-        text = str(msg.get("content", "")).strip()
-        # SỬA LỖI 1: Lọc bỏ header AI rác khỏi lịch sử trước khi gửi cho Gemini
-        text = re.sub(r"^🤖\s*\*\*\[Phân tích bởi AI\s*\([^)]+\)\]\*\*\s*", "", text).strip()
-        text = text[:2000].strip()
-        if not text:
+        message_text = str(msg.get("content", "")).strip()
+        # Bỏ phần tiêu đề kỹ thuật do giao diện thêm vào câu trả lời AI.
+        message_text = re.sub(
+            r"^🤖\\s*\\*\\*\\[Phân tích bởi AI\\s*\\([^)]+\\)\\]\\*\\*\\s*",
+            "",
+            message_text,
+        ).strip()
+        message_text = message_text[:2000].strip()
+        if not message_text:
             continue
-        gemini_role = "user" if role == "user" else "model"
-        # Gemini mong đợi luân phiên user/model; gộp liền kề cùng vai trò.
-        if contents and contents[-1]["role"] == gemini_role:
-            contents[-1]["parts"][0]["text"] += "\n\n" + text
-        else:
-            contents.append({"role": gemini_role, "parts": [{"text": text}]})
 
-    # Bắt đầu lịch sử bằng lượt user để tránh gửi chuỗi hội thoại không hợp lệ.
+        gemini_role = "user" if role == "user" else "model"
+        # Gemini cần các lượt luân phiên; gộp các tin liên tiếp cùng vai trò.
+        if contents and contents[-1]["role"] == gemini_role:
+            contents[-1]["parts"][0]["text"] += "\\n\\n" + message_text
+        else:
+            contents.append({"role": gemini_role, "parts": [{"text": message_text}]})
+
+    # Lịch sử phải bắt đầu bằng lượt user; câu hỏi hiện tại được thêm cuối cùng.
     while contents and contents[0]["role"] != "user":
         contents.pop(0)
     contents.append({"role": "user", "parts": [{"text": question}]})
@@ -549,4 +589,104 @@ with st.sidebar:
                                 st.success(f"Đã cập nhật tài khoản {selected_user}.")
                                 st.rerun()
                             except Exception as e:
-                                st.error
+                                st.error(f"Không thể cập nhật tài khoản: {e}")
+            except Exception as e:
+                st.error(f"Không tải được dữ liệu quản lý tài khoản: {e}")
+        st.divider()
+
+
+    st.markdown("## ⚙️ Cài đặt")
+
+    if get_gemini_api_key():
+        st.success("🔑 Gemini API Key đã được cấu hình.")
+    else:
+        st.warning("🔑 Chưa tìm thấy GEMINI_API_KEY trong Streamlit Secrets.")
+
+    st.divider()
+    st.markdown("### 📂 Nguồn dữ liệu kho")
+
+    data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
+    data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
+    if data_source != st.session_state.data_source:
+        st.session_state.data_source = data_source
+        saved_config["data_source"] = data_source
+        save_json_data(CONFIG_PATH, saved_config)
+
+    sheets_data = None
+    if data_source == "🌐 Link Google Trang tính":
+        gsheet_url_input = st.text_input("Dán link Google Sheet:", value=st.session_state.gsheet_url)
+        if gsheet_url_input != st.session_state.gsheet_url:
+            st.session_state.gsheet_url = gsheet_url_input
+            saved_config["gsheet_url"] = gsheet_url_input
+            save_json_data(CONFIG_PATH, saved_config)
+
+        if st.session_state.gsheet_url:
+            try:
+                sheets_data = load_all_sheets_from_gsheet(st.session_state.gsheet_url)
+                st.success(f"✅ Kết nối thành công {len(sheets_data)} tab!")
+            except Exception:
+                st.error("❌ Lỗi đọc Google Sheet!")
+    else:
+        uploaded = st.file_uploader("Tải file Excel", type=["xlsx", "xls"])
+        if uploaded:
+            EXCEL_PATH.write_bytes(uploaded.read())
+            st.cache_data.clear()
+            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            st.success("✅ Đã lưu file Excel mới!")
+        elif EXCEL_PATH.exists():
+            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
+
+    st.divider()
+    if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
+        st.session_state.messages = []
+        save_json_data(CHAT_PATH, [])
+        st.rerun()
+
+# ── GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH ─────────────────────────────────────────
+st.markdown("# 🏭 AI Quản Lý Kho Hàng")
+
+if not sheets_data:
+    st.info("👈 Vui lòng dán Link Google Sheet hoặc tải file Excel ở sidebar trái.")
+    st.stop()
+
+tab_data, tab_chat = st.tabs(["📊 Xem dữ liệu", "💬 Hỏi đáp Thông Minh"])
+
+with tab_data:
+    selected_tab = st.selectbox("Chọn Tab:", list(sheets_data.keys()))
+    st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
+
+with tab_chat:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]): 
+            if msg["role"] == "assistant":
+                render_message_and_chart(msg["content"], sheets_data)
+            else:
+                st.markdown(msg["content"])
+
+    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
+
+    if st.button("🚀 Gửi câu hỏi", type="primary"):
+        if question:
+            with st.chat_message("user"): 
+                st.markdown(question)
+            
+            st.session_state.messages.append({"role": "user", "content": question})
+            save_json_data(CHAT_PATH, st.session_state.messages)
+
+            with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
+                local_answer, need_ai = auto_route_and_process(question, sheets_data)
+
+                if not need_ai:
+                    final_ans = local_answer
+                else:
+                    try:
+                        final_ans = ask_ai(question, sheets_data, chat_history=st.session_state.messages[:-1])
+                    except Exception as e:
+                        final_ans = f"❌ {str(e)}"
+
+                with st.chat_message("assistant"):
+                    render_message_and_chart(final_ans, sheets_data)
+                
+                st.session_state.messages.append({"role": "assistant", "content": final_ans})
+                save_json_data(CHAT_PATH, st.session_state.messages)
