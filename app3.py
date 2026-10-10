@@ -348,17 +348,35 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     for name, df in sheets_dict.items():
         df_clean = df.dropna(how="all")
         if not df_clean.empty:
-            prompt_data.append("=== TAB [" + str(name) + "] ===\n" + df_clean.head(50).to_string(index=False))
+            # Serialize ngày tháng theo định dạng đầy đủ, đồng thời giữ nguyên các giá trị khác.
+            table_text = df_clean.to_csv(index=False, date_format="%Y-%m-%d %H:%M:%S", lineterminator="\n")
+            prompt_data.append("=== TAB [" + str(name) + "] ===\n" + table_text)
             
-    context = "\n\n".join(prompt_data)
+    # Giới hạn payload tổng thể để tránh vượt giới hạn ngữ cảnh.
+    max_context_chars = 45000
+    context_parts = []
+    used_chars = 0
+    for part in prompt_data:
+        remaining = max_context_chars - used_chars
+        if remaining <= 0:
+            context_parts.append("[Đã lược bớt dữ liệu do giới hạn ngữ cảnh.]")
+            break
+        if len(part) > remaining:
+            context_parts.append(part[:remaining] + "\n[Tab này đã bị lược bớt do giới hạn ngữ cảnh.]")
+            used_chars = max_context_chars
+            break
+        context_parts.append(part)
+        used_chars += len(part) + 2
+    context = "\n\n".join(context_parts)
     
     system_text = (
-        "Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu kho hàng hiện tại (tối đa 50 dòng):\n\n"
+        "Bạn là chuyên gia phân tích kho hàng. Dữ liệu bên dưới là dữ liệu kho hiện có được chọn trong giới hạn ngữ cảnh; không được coi phần dữ liệu hiển thị là toàn bộ kho nếu có ghi rõ bị giới hạn.\n\n"
         + context + "\n\n"
         "QUY TẮC HIỂU NGỮ CẢNH VÀ THAM CHIẾU:\n"
         "1. Dùng lịch sử hội thoại được gửi kèm để hiểu câu hỏi hiện tại.\n"
-        "2. Với các cụm như 'các sản phẩm trên', 'danh sách vừa rồi', 'những mặt hàng đó', hãy dựa vào lượt trước để xác định đối tượng rồi đối chiếu dữ liệu kho hiện tại.\n"
-        "3. Không tự suy đoán tên hoặc mã sản phẩm nếu lịch sử không đủ thông tin.\n\n"
+        "2. Với các cụm như 'các sản phẩm trên', 'danh sách vừa rồi', 'những mặt hàng đó', chỉ dùng các sản phẩm thuộc danh sách ở lượt trước; tuyệt đối không mở rộng sang toàn bộ kho.\n"
+        "3. Nếu câu hỏi yêu cầu tìm tồn kho thấp nhất/cao nhất trong nhóm vừa nêu, hãy so sánh đúng nhóm đó với dữ liệu kho và nêu rõ nếu không xác định chắc chắn được thành viên của nhóm.\n"
+        "4. Không tự suy đoán tên hoặc mã sản phẩm nếu lịch sử không đủ thông tin. Khi không thể khôi phục danh sách trước đó, hãy hỏi người dùng xác nhận thay vì quét toàn bộ kho.\n\n"
         "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
         "1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.\n"
         "2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:\n"
@@ -378,7 +396,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         message_text = str(msg.get("content", "")).strip()
         # Bỏ phần tiêu đề kỹ thuật do giao diện thêm vào câu trả lời AI.
         message_text = re.sub(
-            r"^🤖\\s*\\*\\*\\[Phân tích bởi AI\\s*\\([^)]+\\)\\]\\*\\*\\s*",
+            r"^🤖\s*\*\*\[Phân tích bởi AI\s*\([^)]+\)\]\*\*\s*",
             "",
             message_text,
         ).strip()
@@ -389,7 +407,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         gemini_role = "user" if role == "user" else "model"
         # Gemini cần các lượt luân phiên; gộp các tin liên tiếp cùng vai trò.
         if contents and contents[-1]["role"] == gemini_role:
-            contents[-1]["parts"][0]["text"] += "\\n\\n" + message_text
+            contents[-1]["parts"][0]["text"] += "\n\n" + message_text
         else:
             contents.append({"role": gemini_role, "parts": [{"text": message_text}]})
 
