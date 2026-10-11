@@ -14,7 +14,7 @@ st.set_page_config(
     page_title="AI Kho Hàng - Quản Lý & Phân Tích",
     page_icon="🏭",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # ── CSS Tùy chỉnh ────────────────────────────────────────────────────────────
@@ -32,8 +32,8 @@ st.markdown("""
     div[data-testid="stChatInput"] {
         position: fixed !important;
         bottom: 1rem !important;
-        left: max(17rem, calc((100vw - 1100px) / 2 + 17rem)) !important;
-        right: max(1rem, calc((100vw - 1100px) / 2 + 1rem)) !important;
+        left: max(1rem, calc((100vw - 1320px) / 2)) !important;
+        right: max(1rem, calc((100vw - 1320px) / 2)) !important;
         width: auto !important;
         z-index: 9999 !important;
         background: var(--background-color);
