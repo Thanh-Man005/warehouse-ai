@@ -14,14 +14,49 @@ st.set_page_config(
     page_title="AI Kho Hàng - Quản Lý & Phân Tích",
     page_icon="🏭",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # ── CSS Tùy chỉnh ────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main .block-container { padding-top: 1.5rem; max-width: 1100px; }
+    .main .block-container { padding-top: 1.25rem; max-width: 1320px; }
     .stChatMessage { border-radius: 12px; }
+    div[data-testid="stMetric"] { background: #ffffff; border: 1px solid #e5edf6; border-radius: 14px; padding: 14px 16px; box-shadow: 0 3px 12px rgba(31, 75, 121, 0.055); }
+    .warehouse-heading { display: flex; align-items: center; justify-content: space-between; margin: 0 0 1rem 0; padding: 0.15rem 0 0.4rem; }
+    .warehouse-heading h2 { margin: 0.15rem 0 0.2rem; color: #12365c; font-size: 1.75rem; }
+    .warehouse-heading p { margin: 0; color: #6b7d92; font-size: 0.95rem; }
+    .warehouse-eyebrow { font-size: 0.68rem; letter-spacing: 0.12em; font-weight: 700; color: #3b82b8; }
+
+    /* Ghim ô hỏi đáp theo đáy màn hình; mặc định khi sidebar thu gọn. */
+    div[data-testid="stChatInput"] {
+        position: fixed !important;
+        bottom: 1rem !important;
+        left: max(1rem, calc((100vw - 1320px) / 2)) !important;
+        right: max(1rem, calc((100vw - 1320px) / 2)) !important;
+        width: auto !important;
+        z-index: 9999 !important;
+        background: var(--background-color);
+        padding-top: 0.35rem;
+        padding-bottom: 0.35rem;
+        transition: left 180ms ease, right 180ms ease, width 180ms ease;
+    }
+
+    /* Sidebar mở: dịch ô chat sang phải và thu hẹp theo vùng nội dung còn lại. */
+    .stApp:has([data-testid="stSidebar"][aria-expanded="true"]) div[data-testid="stChatInput"] {
+        left: max(22rem, calc((100vw - 1320px) / 2 + 22rem)) !important;
+        right: max(1rem, calc((100vw - 1320px) / 2)) !important;
+    }
+
+    @media (max-width: 700px) {
+        div[data-testid="stChatInput"],
+        .stApp:has([data-testid="stSidebar"][aria-expanded="true"]) div[data-testid="stChatInput"] {
+            left: 0.75rem !important;
+            right: 0.75rem !important;
+            bottom: 0.5rem !important;
+        }
+    }
+
     .login-box {
         max-width: 420px;
         margin: 50px auto;
@@ -62,20 +97,255 @@ def save_json_data(path: Path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Khởi tạo tài khoản mặc định nếu chưa có file users.json
+
+def chat_path_for_user(username: str) -> Path:
+    """Tệp hội thoại riêng cho từng tài khoản."""
+    safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(username or "guest"))
+    return DATA_DIR / f"chat_history_{safe_username}.json"
+
+def normalize_chat_store(raw) -> dict:
+    """Chuẩn hóa lịch sử mới và chuyển định dạng lịch sử cũ sang danh sách hội thoại."""
+    if isinstance(raw, dict) and isinstance(raw.get("conversations"), list):
+        conversations = raw["conversations"]
+        active_id = raw.get("active_id")
+    elif isinstance(raw, list) and raw:
+        active_id = "legacy"
+        first_question = next((str(m.get("content", "")) for m in raw if m.get("role") == "user"), "Cuộc trò chuyện cũ")
+        conversations = [{
+            "id": active_id,
+            "title": first_question[:45] or "Cuộc trò chuyện cũ",
+            "updated_at": "",
+            "messages": raw,
+        }]
+    else:
+        conversations, active_id = [], None
+
+    if active_id not in [conv.get("id") for conv in conversations]:
+        active_id = conversations[0].get("id") if conversations else None
+    return {"active_id": active_id, "conversations": conversations}
+
+def supabase_load_chat_store(username: str):
+    """Đọc hội thoại từ Supabase; trả về None nếu tài khoản chưa có bản ghi."""
+    url, _ = get_supabase_settings()
+    response = requests.get(
+        f"{url}/rest/v1/chat_history",
+        headers=supabase_headers(),
+        params={
+            "select": "username,active_id,conversations,updated_at",
+            "username": f"eq.{username}",
+            "limit": "1",
+        },
+        timeout=15,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không đọc được lịch sử chat từ Supabase (HTTP {response.status_code}).")
+    rows = response.json()
+    if not rows:
+        return None
+    return normalize_chat_store({
+        "active_id": rows[0].get("active_id"),
+        "conversations": rows[0].get("conversations", []),
+    })
+
+def supabase_save_chat_store(username: str, store: dict):
+    """Lưu toàn bộ danh sách hội thoại lên Supabase bằng upsert theo username."""
+    url, _ = get_supabase_settings()
+    response = requests.post(
+        f"{url}/rest/v1/chat_history",
+        headers={**supabase_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+        params={"on_conflict": "username"},
+        json={
+            "username": username,
+            "active_id": store.get("active_id"),
+            "conversations": store.get("conversations", []),
+            "updated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        },
+        timeout=20,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không lưu được lịch sử chat lên Supabase (HTTP {response.status_code}).")
+
+def load_chat_store(username: str) -> dict:
+    """Ưu tiên Supabase; nếu bảng chưa sẵn sàng thì dùng bản JSON dự phòng."""
+    try:
+        remote_store = supabase_load_chat_store(username)
+        if remote_store is not None:
+            st.session_state.chat_storage_warning = ""
+            return remote_store
+
+        # Nếu Supabase chưa có bản ghi, nhập lịch sử cục bộ cũ lên lần đầu.
+        local_store = normalize_chat_store(load_json_data(chat_path_for_user(username), []))
+        supabase_save_chat_store(username, local_store)
+        st.session_state.chat_storage_warning = ""
+        return local_store
+    except Exception as exc:
+        st.session_state.chat_storage_warning = (
+            "Chưa lưu được lịch sử lâu dài trên Supabase. "
+            "Ứng dụng tạm dùng tệp cục bộ; hãy tạo bảng chat_history theo hướng dẫn. "
+            f"Chi tiết: {exc}"
+        )
+        return normalize_chat_store(load_json_data(chat_path_for_user(username), []))
+
+def save_chat_history():
+    """Đồng bộ tin nhắn hiện tại vào hội thoại đang mở và lưu lâu dài."""
+    username = st.session_state.get("username", "")
+    if not username:
+        return
+    conversations = st.session_state.get("conversations", [])
+    active_id = st.session_state.get("active_conversation_id")
+    for conv in conversations:
+        if conv.get("id") == active_id:
+            conv["messages"] = st.session_state.get("messages", [])
+            if not conv.get("title") or conv.get("title") == "Cuộc trò chuyện mới":
+                first_question = next((str(m.get("content", "")).strip() for m in conv["messages"] if m.get("role") == "user"), "")
+                if first_question:
+                    conv["title"] = first_question[:45] + ("…" if len(first_question) > 45 else "")
+            conv["updated_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+            break
+    store = {
+        "active_id": active_id,
+        "conversations": conversations,
+    }
+    # Luôn lưu bản dự phòng trước; sau đó đồng bộ Supabase.
+    save_json_data(chat_path_for_user(username), store)
+    try:
+        supabase_save_chat_store(username, store)
+        st.session_state.chat_storage_warning = ""
+    except Exception as exc:
+        st.session_state.chat_storage_warning = (
+            "Lịch sử đang được lưu tạm trên máy chủ ứng dụng, chưa đồng bộ được Supabase. "
+            f"Chi tiết: {exc}"
+        )
+
+def start_new_conversation():
+    """Tạo một hội thoại trống và chuyển sang hội thoại đó."""
+    import uuid
+    conversation_id = uuid.uuid4().hex
+    conversation = {
+        "id": conversation_id,
+        "title": "Cuộc trò chuyện mới",
+        "updated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        "messages": [],
+    }
+    st.session_state.conversations.insert(0, conversation)
+    st.session_state.active_conversation_id = conversation_id
+    st.session_state.messages = []
+    st.session_state.chat_selector_id = conversation_id
+    save_chat_history()
+
+# ── Kết nối Supabase (khóa chỉ được đọc từ Streamlit Secrets) ────────────────
+def get_supabase_settings():
+    try:
+        url = str(st.secrets.get("SUPABASE_URL", "")).strip().rstrip("/")
+        key = str(st.secrets.get("SUPABASE_KEY", "")).strip()
+    except Exception:
+        url, key = "", ""
+    if not url or not key:
+        raise RuntimeError(
+            "Chưa cấu hình SUPABASE_URL và SUPABASE_KEY trong "
+            "Streamlit Cloud → Settings → Secrets."
+        )
+    return url, key
+
+def supabase_headers():
+    _, key = get_supabase_settings()
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+def supabase_get_users():
+    url, _ = get_supabase_settings()
+    response = requests.get(
+        f"{url}/rest/v1/app_users",
+        headers=supabase_headers(),
+        params={"select": "username,password_hash,role,fullname,created_at", "order": "created_at.asc"},
+        timeout=15,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không đọc được danh sách tài khoản từ Supabase (HTTP {response.status_code}).")
+    return response.json()
+
+def supabase_insert_user(username, password_hash, role, fullname):
+    url, _ = get_supabase_settings()
+    response = requests.post(
+        f"{url}/rest/v1/app_users",
+        headers={**supabase_headers(), "Prefer": "return=representation"},
+        json={
+            "username": username,
+            "password_hash": password_hash,
+            "role": role,
+            "fullname": fullname or username,
+        },
+        timeout=15,
+    )
+    if not response.ok:
+        if response.status_code == 409:
+            raise ValueError("Tài khoản đã tồn tại!")
+        raise RuntimeError(f"Không lưu được tài khoản vào Supabase (HTTP {response.status_code}).")
+    return response.json()
+
+def supabase_update_user(username, updates):
+    """Cập nhật thông tin tài khoản theo username trong Supabase."""
+    if not updates:
+        raise ValueError("Chưa có thông tin nào cần cập nhật.")
+    url, _ = get_supabase_settings()
+    response = requests.patch(
+        f"{url}/rest/v1/app_users",
+        headers={**supabase_headers(), "Prefer": "return=representation"},
+        params={"username": f"eq.{username}"},
+        json=updates,
+        timeout=15,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không cập nhật được tài khoản (HTTP {response.status_code}).")
+    updated_rows = response.json()
+    if not updated_rows:
+        raise RuntimeError("Không tìm thấy tài khoản cần cập nhật.")
+    return updated_rows[0]
+
+# Chuyển tài khoản cũ sang Supabase nếu file users.json còn tồn tại.
+# Nếu chưa có dữ liệu cũ và bảng trống, tạo tài khoản khởi tạo admin/admin123.
 def init_users_data():
-    users = load_json_data(USERS_PATH, {})
-    if not users:
-        # Tạo tài khoản Admin mặc định: admin / admin123
-        users = {
+    rows = supabase_get_users()
+    existing = {str(row.get("username", "")) for row in rows}
+    legacy_users = load_json_data(USERS_PATH, {})
+
+    if not rows and not legacy_users:
+        legacy_users = {
             "admin": {
                 "password": hash_password("admin123"),
                 "role": "admin",
-                "fullname": "Quản trị viên"
+                "fullname": "Quản trị viên",
             }
         }
-        save_json_data(USERS_PATH, users)
-    return users
+
+    for username, record in legacy_users.items():
+        if username in existing:
+            continue
+        password_hash = record.get("password") or record.get("password_hash")
+        if not password_hash:
+            continue
+        supabase_insert_user(
+            username,
+            password_hash,
+            record.get("role", "user"),
+            record.get("fullname", username),
+        )
+        existing.add(username)
+
+    rows = supabase_get_users()
+    return {
+        row["username"]: {
+            "password": row["password_hash"],
+            "role": row.get("role", "user"),
+            "fullname": row.get("fullname") or row["username"],
+            "created_at": row.get("created_at", ""),
+        }
+        for row in rows
+    }
 
 # Khởi tạo trạng thái Session State
 if "logged_in" not in st.session_state:
@@ -99,41 +369,83 @@ def render_login_screen():
             submit_btn = st.form_submit_button("Đăng Nhập", type="primary", use_container_width=True)
             
             if submit_btn:
-                users = init_users_data()
-                if username_input in users:
-                    hashed_pwd = hash_password(password_input)
-                    if users[username_input]["password"] == hashed_pwd:
-                        st.session_state.logged_in = True
-                        st.session_state.username = username_input
-                        st.session_state.user_role = users[username_input].get("role", "user")
-                        st.success("✅ Đăng nhập thành công!")
-                        st.rerun()
+                try:
+                    users = init_users_data()
+                    if username_input in users:
+                        hashed_pwd = hash_password(password_input)
+                        if users[username_input]["password"] == hashed_pwd:
+                            st.session_state.logged_in = True
+                            st.session_state.username = username_input
+                            st.session_state.user_role = users[username_input].get("role", "user")
+                            st.success("✅ Đăng nhập thành công!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Sai mật khẩu!")
                     else:
-                        st.error("❌ Sai mật khẩu!")
-                else:
-                    st.error("❌ Tài khoản không tồn tại!")
+                        st.error("❌ Tài khoản không tồn tại!")
+                except Exception as e:
+                    st.error(f"❌ Không thể kết nối cơ sở dữ liệu tài khoản: {e}")
 
 if not st.session_state.logged_in:
     render_login_screen()
     st.stop()  # Dừng chương trình tại đây nếu chưa đăng nhập
 
+# Nạp kho hội thoại riêng cho tài khoản sau khi đăng nhập.
+current_username = st.session_state.username
+if st.session_state.get("chat_owner") != current_username:
+    chat_store = load_chat_store(current_username)
+    st.session_state.conversations = chat_store["conversations"]
+    st.session_state.active_conversation_id = chat_store["active_id"]
+    st.session_state.chat_owner = current_username
+    active_conv = next((x for x in st.session_state.conversations if x.get("id") == st.session_state.active_conversation_id), None)
+    st.session_state.messages = active_conv.get("messages", []) if active_conv else []
+    st.session_state.chat_selector_id = st.session_state.active_conversation_id
+
+# Luôn có một cuộc trò chuyện đang mở, nhưng chưa cần lưu cho đến khi có nội dung.
+if not st.session_state.get("active_conversation_id"):
+    start_new_conversation()
+
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
+
 # ════════════════════════════════════════════════════════════════════════════
+
 saved_config = load_json_data(CONFIG_PATH, {
-    "api_key": "",
-    "data_source": "🌐 Link Google Trang tính",
-    "gsheet_url": ""
+"data_source": "🌐 Link Google Trang tính",
+"gsheet_url": ""
 })
 
-if "api_key" not in st.session_state:
-    st.session_state.api_key = saved_config.get("api_key", "")
+
+# Lấy Gemini API Key từ Streamlit Secrets, không nhập trực tiếp trong giao diện.
+def get_gemini_api_key() -> str:
+    try:
+        return str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+    except Exception:
+        return ""
+
+# Xóa API Key cũ khỏi cấu hình nếu trước đây đã lưu trong config.json.
+if "api_key" in saved_config:
+    saved_config.pop("api_key", None)
+    save_json_data(CONFIG_PATH, saved_config)
+
 if "gsheet_url" not in st.session_state:
     st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
+
+if "gsheet_urls_input" not in st.session_state:
+    saved_sheet_urls = saved_config.get("gsheet_urls", [])
+    if isinstance(saved_sheet_urls, str):
+        saved_sheet_urls = [line.strip() for line in saved_sheet_urls.splitlines() if line.strip()]
+    if not saved_sheet_urls and st.session_state.gsheet_url:
+        saved_sheet_urls = [st.session_state.gsheet_url]
+    st.session_state.gsheet_urls_input = "\\n".join(
+        url.strip() for url in saved_sheet_urls if isinstance(url, str) and url.strip()
+    )
+
 if "data_source" not in st.session_state:
-    st.session_state.data_source = saved_config.get("data_source", "🌐 Link Google Trang tính")
-if "messages" not in st.session_state:
-    st.session_state.messages = load_json_data(CHAT_PATH, [])
+    st.session_state.data_source = saved_config.get(
+        "data_source", "🌐 Link Google Trang tính"
+    )
+
 
 def auto_route_and_process(question: str, sheets_dict: dict):
     q_low = question.lower().strip()
@@ -212,15 +524,62 @@ def load_all_sheets_from_gsheet(url: str) -> dict:
     xl = pd.ExcelFile(io.BytesIO(resp.content))
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
+def load_all_sheets_from_multiple_gsheets(urls: list) -> tuple:
+    """Gộp sheet từ nhiều link Google Sheets; báo lỗi riêng từng link."""
+    combined = {}
+    errors = []
+    for index, url in enumerate(urls, start=1):
+        sheet_id = extract_gsheet_id(url)
+        if not sheet_id:
+            errors.append(f"Link {index}: URL không đúng định dạng Google Sheets.")
+            continue
+        source_label = f"Google Sheet {index} ({sheet_id[:8]})"
+        try:
+            sheets = load_all_sheets_from_gsheet(url)
+            for sheet_name, frame in sheets.items():
+                key = f"{source_label} · {sheet_name}"
+                if key in combined:
+                    key = f"{source_label} · {sheet_name} ({index})"
+                combined[key] = frame
+        except Exception as exc:
+            errors.append(f"Link {index} ({sheet_id[:8]}): {exc}")
+    return combined, errors
+
+
 @st.cache_data(show_spinner=False)
 def load_all_sheets_from_file(path: str) -> dict:
     xl = pd.ExcelFile(path)
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
-def ask_ai(question: str, sheets_dict: dict) -> str:
-    api_key = st.session_state.get("api_key", "").strip()
+
+def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
+    """Đọc mọi sheet từ nhiều file Excel; giữ tên file trong khóa để không trùng sheet."""
+    combined = {}
+    errors = []
+    for file_index, uploaded in enumerate(uploaded_files, start=1):
+        filename = Path(str(uploaded.name)).name
+        try:
+            workbook = pd.ExcelFile(io.BytesIO(uploaded.getvalue()))
+            for sheet_name in workbook.sheet_names:
+                key = f"{filename} · {sheet_name}"
+                if key in combined:
+                    key = f"{filename} ({file_index}) · {sheet_name}"
+                combined[key] = workbook.parse(sheet_name)
+        except Exception as exc:
+            errors.append(f"{filename}: {exc}")
+    if not combined:
+        details = "; ".join(errors) if errors else "Không tìm thấy sheet dữ liệu trong file."
+        raise ValueError(details)
+    return combined, errors
+
+
+def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
+    api_key = get_gemini_api_key()
     if not api_key:
-        raise Exception("🔑 Chưa nhập API Key! Vui lòng dán API Key vào menu Cài đặt ở góc trái.")
+        raise Exception(
+            "🔑 Chưa cấu hình GEMINI_API_KEY trong "
+            "Streamlit Cloud → Settings → Secrets."
+        )
     
     prompt_data = []
     for name, df in sheets_dict.items():
@@ -229,17 +588,28 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
             prompt_data.append("=== TAB [" + str(name) + "] ===\n" + df_clean.head(50).to_string(index=False))
             
     context = "\n\n".join(prompt_data)
-    
+
+    # Đưa các lượt hội thoại gần nhất vào prompt để câu hỏi nối tiếp có ngữ cảnh.
+    history_lines = []
+    for item in (chat_history or [])[-16:]:
+        role = "Người dùng" if item.get("role") == "user" else "Trợ lý"
+        text_value = str(item.get("content", "")).strip()
+        if text_value:
+            history_lines.append(f"{role}: {text_value[:3500]}")
+    history_context = "\n".join(history_lines)
+
     system_text = (
-        "Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu kho hàng hiện tại (tối đa 50 dòng):\n\n"
+        "Bạn là chuyên gia phân tích kho hàng. Dữ liệu kho hàng bên dưới chỉ là dữ liệu hiện tại; "
+        "lịch sử hội thoại được cung cấp để hiểu câu hỏi nối tiếp.\n\n"
         + context + "\n\n"
-        "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
-        "1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.\n"
-        "2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:\n"
-        "| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "3. Trả lời trực tiếp vào trọng tâm câu hỏi.\n"
-        "4. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
+        "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Chưa có lịch sử)") + "\n\n"
+        "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\\n"
+        "0. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm trong câu trả lời trước liên quan; không mở rộng sang toàn bộ kho. Nếu thiếu dữ liệu, nói rõ, không đoán.\\n"
+        "1. Ưu tiên câu trả lời NGẮN GỌN, trực tiếp: nêu kết quả chính ngay đầu; thường chỉ 1-3 câu, chỉ thêm bảng khi giúp đọc số liệu dễ hơn.\\n"
+        "2. Với câu hỏi so sánh/xếp hạng, chỉ đưa tên/mã, số lượng và đơn vị cần thiết; nêu kết luận một lần. Không nhắc lại yêu cầu, không mô tả quy trình tra cứu, không lặp lại cùng số liệu ở nhiều đoạn, không thêm lời dẫn hoặc kết luận dài dòng.\\n"
+        "3. Vẫn phải đủ thông tin để kiểm chứng: giữ nguyên tên/mã sản phẩm, số liệu và đơn vị; nếu so sánh nhiều sản phẩm thì dùng bảng gọn. Không bỏ các dữ kiện quan trọng chỉ để rút ngắn.\\n"
+        "4. Nếu người dùng yêu cầu phân tích chi tiết, giải thích hoặc báo cáo đầy đủ thì mới trả lời dài hơn theo yêu cầu.\\n"
+        "5. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
     )
 
     body = {
@@ -329,41 +699,129 @@ with st.sidebar:
 
     st.divider()
 
-    # TÍNH NĂNG CHỈ DÀNH CHO ADMIN: CẤP TÀI KHOẢN MỚI
+    # TÍNH NĂNG CHỈ DÀNH CHO ADMIN: CẤP TÀI KHOẢN + DANH SÁCH
     if st.session_state.user_role == "admin":
         with st.expander("➕ Cấp tài khoản mới"):
-            new_user = st.text_input("Tên đăng nhập mới").strip()
-            new_pass = st.text_input("Mật khẩu mới", type="password").strip()
-            new_role = st.selectbox("Quyền", ["user", "admin"])
-            
-            if st.button("Tạo tài khoản"):
+            new_user = st.text_input("Tên đăng nhập mới", key="new_user_supabase").strip()
+            new_fullname = st.text_input("Họ tên", key="new_fullname_supabase").strip()
+            new_pass = st.text_input("Mật khẩu mới", type="password", key="new_pass_supabase").strip()
+            new_role = st.selectbox("Quyền", ["user", "admin"], key="new_role_supabase")
+
+            if st.button("Tạo tài khoản", key="create_supabase_user"):
                 if new_user and new_pass:
-                    users_data = load_json_data(USERS_PATH, {})
-                    if new_user in users_data:
-                        st.error("Tài khoản đã tồn tại!")
-                    else:
-                        users_data[new_user] = {
-                            "password": hash_password(new_pass),
-                            "role": new_role,
-                            "fullname": new_user
-                        }
-                        save_json_data(USERS_PATH, users_data)
-                        st.success(f"✅ Đã tạo tài khoản `{new_user}` thành công!")
+                    try:
+                        users_data = init_users_data()
+                        if new_user in users_data:
+                            st.error("Tài khoản đã tồn tại!")
+                        else:
+                            supabase_insert_user(
+                                new_user,
+                                hash_password(new_pass),
+                                new_role,
+                                new_fullname or new_user,
+                            )
+                            st.success(f"Đã tạo tài khoản {new_user} thành công!")
+                            st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"Không thể tạo tài khoản: {e}")
                 else:
-                    st.warning("Vui lòng điền đầy đủ thông tin!")
+                    st.warning("Vui lòng điền tên đăng nhập và mật khẩu!")
+
+        with st.expander("📋 Danh sách tài khoản đã cấp", expanded=True):
+            try:
+                account_rows = supabase_get_users()
+                if account_rows:
+                    st.dataframe(
+                        [
+                            {
+                                "Tên đăng nhập": row.get("username", ""),
+                                "Họ tên": row.get("fullname") or row.get("username", ""),
+                                "Quyền": row.get("role", "user"),
+                                "Ngày tạo": row.get("created_at", ""),
+                            }
+                            for row in account_rows
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    st.caption(f"Tổng số tài khoản: {len(account_rows)}")
+                else:
+                    st.info("Chưa có tài khoản nào trong Supabase.")
+            except Exception as e:
+                st.error(f"Không tải được danh sách tài khoản: {e}")
+        with st.expander("🛠️ Quản lý tài khoản", expanded=False):
+            try:
+                managed_users = supabase_get_users()
+                if not managed_users:
+                    st.info("Chưa có tài khoản để quản lý.")
+                else:
+                    user_options = [row.get("username", "") for row in managed_users]
+                    selected_user = st.selectbox(
+                        "Chọn tài khoản cần chỉnh sửa",
+                        user_options,
+                        key="manage_user_select",
+                    )
+                    selected_record = next(
+                        (row for row in managed_users if row.get("username") == selected_user),
+                        {},
+                    )
+                    with st.form("manage_account_form"):
+                        edit_fullname = st.text_input(
+                            "Họ tên",
+                            value=selected_record.get("fullname") or selected_user,
+                        ).strip()
+                        edit_role = st.selectbox(
+                            "Quyền tài khoản",
+                            ["user", "admin"],
+                            index=0 if selected_record.get("role", "user") == "user" else 1,
+                        )
+                        reset_password = st.text_input(
+                            "Mật khẩu mới (để trống nếu không đổi)",
+                            type="password",
+                        ).strip()
+                        save_account = st.form_submit_button(
+                            "Lưu thay đổi", type="primary", use_container_width=True
+                        )
+
+                    if save_account:
+                        current_role = selected_record.get("role", "user")
+                        admin_count = sum(1 for row in managed_users if row.get("role") == "admin")
+                        if selected_user == st.session_state.username and edit_role != "admin":
+                            st.error("Không thể tự hạ quyền admin của tài khoản đang đăng nhập.")
+                        elif current_role == "admin" and edit_role != "admin" and admin_count <= 1:
+                            st.error("Không thể hạ quyền admin cuối cùng của hệ thống.")
+                        elif reset_password and len(reset_password) < 6:
+                            st.error("Mật khẩu mới phải có ít nhất 6 ký tự.")
+                        else:
+                            updates = {
+                                "fullname": edit_fullname or selected_user,
+                                "role": edit_role,
+                            }
+                            if reset_password:
+                                updates["password_hash"] = hash_password(reset_password)
+                            try:
+                                supabase_update_user(selected_user, updates)
+                                st.success(f"Đã cập nhật tài khoản {selected_user}.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Không thể cập nhật tài khoản: {e}")
+            except Exception as e:
+                st.error(f"Không tải được dữ liệu quản lý tài khoản: {e}")
         st.divider()
 
+
     st.markdown("## ⚙️ Cài đặt")
-    
-    api_key_input = st.text_input("🔑 API Key (Gemini)", type="password", value=st.session_state.api_key)
-    if api_key_input != st.session_state.api_key:
-        st.session_state.api_key = api_key_input
-        saved_config["api_key"] = api_key_input
-        save_json_data(CONFIG_PATH, saved_config)
+
+    if get_gemini_api_key():
+        st.success("🔑 Gemini API Key đã được cấu hình.")
+    else:
+        st.warning("🔑 Chưa tìm thấy GEMINI_API_KEY trong Streamlit Secrets.")
 
     st.divider()
     st.markdown("### 📂 Nguồn dữ liệu kho")
-    
+
     data_source_idx = 0 if st.session_state.data_source == "🌐 Link Google Trang tính" else 1
     data_source = st.radio("Hình thức:", ["🌐 Link Google Trang tính", "📁 Tải file Excel lên"], index=data_source_idx)
     if data_source != st.session_state.data_source:
@@ -373,34 +831,533 @@ with st.sidebar:
 
     sheets_data = None
     if data_source == "🌐 Link Google Trang tính":
-        gsheet_url_input = st.text_input("Dán link Google Sheet:", value=st.session_state.gsheet_url)
-        if gsheet_url_input != st.session_state.gsheet_url:
-            st.session_state.gsheet_url = gsheet_url_input
-            saved_config["gsheet_url"] = gsheet_url_input
-            save_json_data(CONFIG_PATH, saved_config)
+        gsheet_urls_input = st.text_area(
+            "Link Google Trang tính (mỗi link một dòng)",
+            key="gsheet_urls_input",
+            height=120,
+            placeholder="https://docs.google.com/spreadsheets/d/…/edit\nhttps://docs.google.com/spreadsheets/d/…/edit",
+            help="Dán một hoặc nhiều link Google Sheets, mỗi link trên một dòng. Mỗi bảng tính phải được chia sẻ quyền xem cho ứng dụng.",
+        )
+        gsheet_urls = list(dict.fromkeys(
+            line.strip()
+            for line in gsheet_urls_input.splitlines()
+            if line.strip()
+        ))
 
-        if st.session_state.gsheet_url:
-            try:
-                sheets_data = load_all_sheets_from_gsheet(st.session_state.gsheet_url)
-                st.success(f"✅ Kết nối thành công {len(sheets_data)} tab!")
-            except Exception:
-                st.error("❌ Lỗi đọc Google Sheet!")
+        # Lưu danh sách link mới; duy trì gsheet_url cũ để tương thích với cấu hình phiên bản trước.
+        if saved_config.get("gsheet_urls") != gsheet_urls or saved_config.get("gsheet_url", "") != (gsheet_urls[0] if gsheet_urls else ""):
+            saved_config["gsheet_urls"] = gsheet_urls
+            saved_config["gsheet_url"] = gsheet_urls[0] if gsheet_urls else ""
+            save_json_data(CONFIG_PATH, saved_config)
+        st.session_state.gsheet_url = gsheet_urls[0] if gsheet_urls else ""
+
+        if gsheet_urls:
+            with st.spinner(f"Đang đọc {len(gsheet_urls)} link Google Sheets..."):
+                sheets_data, gsheet_errors = load_all_sheets_from_multiple_gsheets(gsheet_urls)
+            if sheets_data:
+                st.success(f"✅ Đã đọc {len(gsheet_urls) - len(gsheet_errors)}/{len(gsheet_urls)} link và tải {len(sheets_data)} tab dữ liệu.")
+            if gsheet_errors:
+                st.warning("Một số link chưa đọc được:\n\n" + "\n".join(f"- {message}" for message in gsheet_errors))
+            if not sheets_data and not gsheet_errors:
+                st.warning("Các Google Sheets đã kết nối nhưng không có tab dữ liệu để hiển thị.")
     else:
-        uploaded = st.file_uploader("Tải file Excel", type=["xlsx", "xls"])
-        if uploaded:
-            EXCEL_PATH.write_bytes(uploaded.read())
-            st.cache_data.clear()
-            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
-            st.success("✅ Đã lưu file Excel mới!")
+        uploaded_files = st.file_uploader(
+            "Tải một hoặc nhiều file Excel",
+            type=["xlsx", "xls"],
+            accept_multiple_files=True,
+            key="warehouse_excel_uploader",
+            help="Có thể chọn nhiều file trong cùng một lần. Ứng dụng sẽ đọc tất cả sheet và ghi rõ tên file nguồn.",
+        )
+        if uploaded_files:
+            try:
+                sheets_data, upload_errors = load_all_sheets_from_uploaded_files(uploaded_files)
+                # Giữ tương thích với cơ chế một file Excel đã lưu trước đây.
+                if len(uploaded_files) == 1:
+                    EXCEL_PATH.write_bytes(uploaded_files[0].getvalue())
+                st.success(f"✅ Đã đọc {len(uploaded_files)} file Excel và {len(sheets_data)} sheet.")
+                if upload_errors:
+                    st.warning("Một số file chưa đọc được: " + " | ".join(upload_errors))
+            except Exception as exc:
+                st.error(f"❌ Không đọc được file Excel: {exc}")
         elif EXCEL_PATH.exists():
             sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
-            st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
+            st.info(f"ℹ️ Đang sử dụng file Excel đã lưu sẵn ({len(sheets_data)} sheet). Tải file lên để thay dữ liệu đang dùng.")
 
     st.divider()
-    if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
-        st.session_state.messages = []
-        save_json_data(CHAT_PATH, [])
+    st.markdown("### 💬 Hội thoại")
+    if st.session_state.get("chat_storage_warning"):
+        st.warning(st.session_state.chat_storage_warning)
+    if st.button("＋ Chat mới", key="start_new_chat", use_container_width=True):
+        start_new_conversation()
         st.rerun()
+
+    conversations = st.session_state.get("conversations", [])
+    if conversations:
+        conversation_labels = {
+            conv["id"]: (conv.get("title") or "Cuộc trò chuyện mới")
+            for conv in conversations
+        }
+        conversation_ids = [conv["id"] for conv in conversations]
+        active_id = st.session_state.get("active_conversation_id")
+        selected_index = conversation_ids.index(active_id) if active_id in conversation_ids else 0
+        selected_conversation_id = st.selectbox(
+            "Mở hội thoại cũ",
+            options=conversation_ids,
+            index=selected_index,
+            format_func=lambda value: conversation_labels.get(value, "Cuộc trò chuyện"),
+            key="chat_selector_id",
+            label_visibility="collapsed",
+        )
+        if selected_conversation_id != active_id:
+            st.session_state.active_conversation_id = selected_conversation_id
+            selected_conv = next((conv for conv in conversations if conv.get("id") == selected_conversation_id), None)
+            st.session_state.messages = selected_conv.get("messages", []) if selected_conv else []
+            st.rerun()
+    else:
+        st.caption("Chưa có cuộc trò chuyện nào.")
+
+
+def _find_column(df, groups):
+    """Tìm cột theo tên thực tế; chỉ dùng khi tên cột khớp các từ khóa rõ ràng."""
+    for group in groups:
+        for col in df.columns:
+            normalized = str(col).strip().lower()
+            if all(term in normalized for term in group):
+                return col
+    return None
+
+
+def _find_stock_column(df):
+    """Ưu tiên tồn cuối kỳ/tồn hiện tại, không nhầm với tồn đầu kỳ hoặc tồn tối thiểu."""
+    prioritized = [
+        ["tồn cuối kỳ"], ["tồn cuối kì"], ["số lượng tồn cuối kỳ"],
+        ["số lượng tồn hiện tại"], ["tồn kho hiện tại"], ["tồn hiện tại"],
+        ["số lượng tồn"], ["tồn kho"], ["stock"],
+    ]
+    for group in prioritized:
+        col = _find_column(df, [group])
+        if col is not None:
+            normalized = str(col).strip().lower()
+            if any(term in normalized for term in ["tối thiểu", "đầu kỳ", "đầu kì", "minimum", "opening"]):
+                continue
+            return col
+
+    # Chấp nhận tên cột tồn tổng quát, nhưng loại các cột nhập/xuất và ngưỡng.
+    for col in df.columns:
+        normalized = str(col).strip().lower()
+        has_stock_word = "tồn" in normalized or "ton" in normalized
+        excluded = any(term in normalized for term in [
+            "tối thiểu", "đầu kỳ", "đầu kì", "tổng nhập", "tổng xuất",
+            "nhập", "xuất", "minimum", "opening", "min stock",
+        ])
+        if has_stock_word and not excluded:
+            return col
+    return None
+
+
+def _find_min_stock_column(df):
+    """Nhận diện cột tồn tối thiểu/ngưỡng tồn đã có trong bảng tính."""
+    return _find_column(df, [
+        ["tồn", "tối thiểu"], ["mức", "tồn", "tối thiểu"],
+        ["ngưỡng", "tồn"], ["tồn", "min"], ["minimum", "stock"],
+        ["min", "stock"], ["safety", "stock"],
+    ])
+
+
+def _numeric_column(series):
+    """Đọc số từ Excel/Sheets theo cả định dạng Việt Nam và quốc tế."""
+    def parse_one(value):
+        if pd.isna(value):
+            return float("nan")
+        text = str(value).strip().replace(" ", "")
+        if not text or text.lower() in {"nan", "none", "nat", "-"}:
+            return float("nan")
+
+        if "," in text and "." in text:
+            # Ký tự phân cách xuất hiện cuối cùng thường là dấu thập phân.
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "," in text:
+            if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+", text):
+                text = text.replace(",", "")
+            else:
+                text = text.replace(",", ".")
+        elif "." in text:
+            # Ví dụ "1.250" thường là 1.250 đơn vị theo chuẩn quốc tế,
+            # nhưng cũng là 1.250 (một nghìn hai trăm năm mươi) theo cách ghi VN.
+            # Chỉ coi dấu chấm là phân cách hàng nghìn khi nhóm 3 chữ số lặp rõ ràng.
+            if re.fullmatch(r"[+-]?\d{1,3}(\.\d{3})+", text):
+                text = text.replace(".", "")
+
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    return pd.Series(series.map(parse_one), index=series.index, dtype="float64")
+
+def render_warehouse_dashboard(sheets_dict):
+    """Dashboard kho kiểu tổng quan: chỉ hiển thị số liệu nhận diện được từ nguồn thật."""
+    st.markdown(
+        """
+        <div class="warehouse-heading">
+            <div>
+                <div class="warehouse-eyebrow">WAREHOUSE OVERVIEW</div>
+                <h2>📦 Tổng quan kho</h2>
+                <p>Theo dõi tồn kho, luồng hàng và các mặt hàng cần chú ý.</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    candidates = []
+    for sheet_name, frame in sheets_dict.items():
+        if frame is None or frame.dropna(how="all").empty:
+            continue
+        clean_frame = frame.dropna(how="all").copy()
+        candidates.append(
+            (sheet_name, clean_frame, _find_stock_column(clean_frame), _find_min_stock_column(clean_frame))
+        )
+
+    if not candidates:
+        st.warning("Không có sheet nào chứa dữ liệu để hiển thị.")
+        return
+
+    stock_candidates = [item for item in candidates if item[2] is not None]
+    if stock_candidates:
+        preferred = next((item for item in stock_candidates if item[3] is not None), stock_candidates[0])
+        source_names = [item[0] for item in stock_candidates]
+        if len(source_names) > 1:
+            selected_name = st.selectbox(
+                "Nguồn dữ liệu tồn kho",
+                source_names,
+                index=source_names.index(preferred[0]),
+                key="warehouse_dashboard_source_sheet",
+            )
+            selected = next(item for item in stock_candidates if item[0] == selected_name)
+        else:
+            selected = stock_candidates[0]
+        selected_name, df, stock_col, min_stock_col = selected
+    else:
+        selected_name, df, stock_col, min_stock_col = candidates[0]
+        st.info("Chưa nhận diện được cột tồn hiện tại. Các số liệu tồn kho sẽ không được tự suy ra từ cột nhập hoặc xuất.")
+
+    category_col = _find_column(df, [
+        ["loại hàng"], ["nhóm hàng"], ["danh mục"], ["category"], ["loại sản phẩm"],
+    ])
+    name_col = _find_column(df, [
+        ["tên hàng"], ["tên sản phẩm"], ["tên vật tư"], ["mặt hàng"], ["name"], ["tên"],
+    ])
+    code_col = _find_column(df, [
+        ["mã hàng"], ["mã sản phẩm"], ["mã vật tư"], ["mã sp"], ["code"], ["mã"],
+    ])
+    unit_col = _find_column(df, [["đơn vị"], ["unit"]])
+
+    # Nhận diện các cột luân chuyển theo tên cột cụ thể; không lấy cột ngày/đơn giá làm số lượng.
+    inbound_col = _find_column(df, [
+        ["số lượng nhập"], ["lượng nhập"], ["sl nhập"], ["tổng nhập"], ["nhập kho"],
+        ["inbound qty"], ["qty in"],
+    ])
+    outbound_col = _find_column(df, [
+        ["số lượng xuất"], ["lượng xuất"], ["sl xuất"], ["tổng xuất"], ["xuất kho"],
+        ["outbound qty"], ["qty out"],
+    ])
+    transfer_col = _find_column(df, [
+        ["số lượng điều chuyển"], ["lượng điều chuyển"], ["sl điều chuyển"],
+        ["điều chuyển"], ["transfer qty"],
+    ])
+    date_col = _find_column(df, [
+        ["ngày chứng từ"], ["ngày giao dịch"], ["ngày nhập"], ["ngày xuất"], ["ngày"], ["date"],
+    ])
+
+    stock_values = _numeric_column(df[stock_col]).dropna() if stock_col is not None else pd.Series(dtype=float)
+    units = []
+    if unit_col is not None:
+        units = sorted(
+            df[unit_col].dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist()
+        )
+
+    def total_for(column):
+        if column is None:
+            return None
+        values = _numeric_column(df[column]).dropna()
+        if values.empty:
+            return None
+        return float(values.sum())
+
+    inbound_total = total_for(inbound_col)
+    outbound_total = total_for(outbound_col)
+    transfer_total = total_for(transfer_col)
+
+    def show_number(value):
+        if value is None:
+            return "Chưa xác định"
+        return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+    # Đếm phiên bằng mã phiếu/chứng từ/giao dịch, không nhầm tổng số lượng thành số phiên.
+    document_col_groups = [
+        ["mã phiếu"], ["số phiếu"], ["mã chứng từ"], ["số chứng từ"],
+        ["mã giao dịch"], ["số giao dịch"], ["mã phiên"], ["mã đơn"],
+        ["transaction id"], ["voucher no"], ["document no"], ["receipt no"],
+    ]
+
+    def count_sessions(direction):
+        if direction == "in":
+            movement_groups = [
+                ["số lượng nhập"], ["lượng nhập"], ["sl nhập"], ["nhập kho"],
+                ["inbound qty"], ["qty in"],
+            ]
+            direction_terms = ["nhập", "nhap", "inbound", "receipt"]
+            opposite_terms = ["xuất", "xuat", "outbound", "shipment"]
+        elif direction == "out":
+            movement_groups = [
+                ["số lượng xuất"], ["lượng xuất"], ["sl xuất"], ["xuất kho"],
+                ["outbound qty"], ["qty out"],
+            ]
+            direction_terms = ["xuất", "xuat", "outbound", "shipment"]
+            opposite_terms = ["nhập", "nhap", "inbound", "receipt"]
+        else:
+            movement_groups = [
+                ["số lượng điều chuyển"], ["lượng điều chuyển"], ["sl điều chuyển"],
+                ["transfer qty"],
+            ]
+            direction_terms = ["điều chuyển", "dieu chuyen", "transfer"]
+            opposite_terms = []
+
+        session_total = 0
+        found = False
+        for sheet_label, frame in sheets_dict.items():
+            if frame is None or frame.dropna(how="all").empty:
+                continue
+            clean = frame.dropna(how="all").copy()
+            label = str(sheet_label).lower()
+            has_direction_name = any(term in label for term in direction_terms)
+            has_opposite_name = any(term in label for term in opposite_terms)
+            qty_col = _find_column(clean, movement_groups)
+
+            # Chỉ đếm trong sheet có tên đúng luồng hoặc có cột số lượng đúng luồng.
+            if has_opposite_name and not has_direction_name:
+                continue
+            if not has_direction_name and qty_col is None:
+                continue
+
+            doc_col = _find_column(clean, document_col_groups)
+            if doc_col is None:
+                continue
+
+            session_rows = clean[doc_col].astype(str).str.strip()
+            valid_mask = clean[doc_col].notna() & ~session_rows.str.lower().isin(["", "nan", "none", "nat"])
+            if qty_col is not None:
+                qty = _numeric_column(clean[qty_col])
+                valid_mask = valid_mask & qty.notna() & (qty > 0)
+            session_ids = session_rows[valid_mask].drop_duplicates()
+            if not session_ids.empty:
+                session_total += int(session_ids.nunique())
+                found = True
+
+        return session_total if found else None
+
+    # Số sản phẩm được đếm theo mã duy nhất; nếu không có mã thì dùng tên duy nhất.
+    if code_col is not None:
+        product_values = df[code_col].astype(str).str.strip()
+        product_count = int(product_values[
+            df[code_col].notna() & ~product_values.str.lower().isin(["", "nan", "none", "nat"])
+        ].nunique())
+    elif name_col is not None:
+        product_values = df[name_col].astype(str).str.strip()
+        product_count = int(product_values[
+            df[name_col].notna() & ~product_values.str.lower().isin(["", "nan", "none", "nat"])
+        ].nunique())
+    else:
+        product_count = int(len(df))
+
+    inbound_sessions = count_sessions("in")
+    outbound_sessions = count_sessions("out")
+    transfer_sessions = count_sessions("transfer")
+
+    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1.metric(
+        "Phiên nhập",
+        show_number(inbound_sessions),
+        icon="📥",
+        border=True,
+        help="Đếm mã phiếu/chứng từ nhập duy nhất trong dữ liệu giao dịch. Nếu chưa xác định được, cần có cột Mã phiếu hoặc Mã chứng từ.",
+    )
+    metric2.metric(
+        "Phiên xuất",
+        show_number(outbound_sessions),
+        icon="📤",
+        border=True,
+        help="Đếm mã phiếu/chứng từ xuất duy nhất trong dữ liệu giao dịch. Nếu chưa xác định được, cần có cột Mã phiếu hoặc Mã chứng từ.",
+    )
+    metric3.metric(
+        "Sản phẩm",
+        f"{product_count:,}",
+        icon="📦",
+        border=True,
+        help="Số mã sản phẩm duy nhất (hoặc tên sản phẩm duy nhất nếu bảng không có cột mã). Đây không phải tổng số lượng tồn.",
+    )
+    metric4.metric(
+        "Phiên điều chuyển",
+        show_number(transfer_sessions),
+        icon="🔁",
+        border=True,
+        help="Đếm mã phiếu/chứng từ điều chuyển duy nhất nếu dữ liệu có thể nhận diện.",
+    )
+    st.caption(
+        f"Nguồn dữ liệu: **{selected_name}**"
+        + (f" · Tồn kho lấy từ cột **{stock_col}**" if stock_col is not None else "")
+        + " · Các chỉ số không có cột tương ứng sẽ hiển thị “Chưa có dữ liệu”."
+    )
+
+    left_chart, right_chart = st.columns([1.35, 1])
+    with left_chart:
+        st.markdown("### 📊 Biểu đồ nhập – xuất kho")
+        if inbound_col is not None and outbound_col is not None:
+            chart_frame = df.copy()
+            chart_frame["_Nhập kho"] = _numeric_column(chart_frame[inbound_col])
+            chart_frame["_Xuất kho"] = _numeric_column(chart_frame[outbound_col])
+            parsed_dates = pd.to_datetime(chart_frame[date_col], errors="coerce", dayfirst=True) if date_col is not None else pd.Series(pd.NaT, index=chart_frame.index)
+            if date_col is not None and parsed_dates.notna().any():
+                chart_frame["_Tháng"] = parsed_dates.dt.to_period("M").astype(str)
+                grouped = chart_frame.groupby("_Tháng", dropna=True)[["_Nhập kho", "_Xuất kho"]].sum().reset_index()
+                grouped = grouped.tail(12)
+                plot_frame = grouped.melt(id_vars="_Tháng", var_name="Luồng hàng", value_name="Số lượng")
+                fig_flow = px.bar(
+                    plot_frame, x="_Tháng", y="Số lượng", color="Luồng hàng", barmode="group",
+                    color_discrete_map={"_Nhập kho": "#1769aa", "_Xuất kho": "#f79432",
+                                        "Nhập kho": "#1769aa", "Xuất kho": "#f79432"},
+                )
+                fig_flow.update_layout(xaxis_title="", yaxis_title="Số lượng", legend_title="", margin=dict(l=8, r=8, t=12, b=8), height=300)
+                st.plotly_chart(fig_flow, use_container_width=True, config={"displayModeBar": False})
+            else:
+                if name_col is not None and code_col is not None:
+                    chart_frame["_Mặt hàng"] = chart_frame[code_col].astype(str) + " — " + chart_frame[name_col].astype(str)
+                elif name_col is not None:
+                    chart_frame["_Mặt hàng"] = chart_frame[name_col].astype(str)
+                elif code_col is not None:
+                    chart_frame["_Mặt hàng"] = chart_frame[code_col].astype(str)
+                else:
+                    chart_frame["_Mặt hàng"] = chart_frame.index.astype(str)
+                chart_frame["_Tổng luân chuyển"] = chart_frame["_Nhập kho"].fillna(0) + chart_frame["_Xuất kho"].fillna(0)
+                plot_frame = chart_frame.dropna(subset=["_Tổng luân chuyển"]).nlargest(8, "_Tổng luân chuyển")
+                plot_frame = plot_frame[["_Mặt hàng", "_Nhập kho", "_Xuất kho"]].melt(
+                    id_vars="_Mặt hàng", var_name="Luồng hàng", value_name="Số lượng"
+                )
+                fig_flow = px.bar(
+                    plot_frame, x="_Mặt hàng", y="Số lượng", color="Luồng hàng", barmode="group",
+                    color_discrete_map={"_Nhập kho": "#1769aa", "_Xuất kho": "#f79432",
+                                        "Nhập kho": "#1769aa", "Xuất kho": "#f79432"},
+                )
+                fig_flow.update_layout(xaxis_title="", yaxis_title="Số lượng", legend_title="", margin=dict(l=8, r=8, t=12, b=8), height=300)
+                fig_flow.update_xaxes(tickangle=-20)
+                st.plotly_chart(fig_flow, use_container_width=True, config={"displayModeBar": False})
+        elif stock_col is not None and not stock_values.empty:
+            top_stock = df.copy()
+            top_stock["_Tồn thực tế"] = _numeric_column(top_stock[stock_col])
+            if name_col is not None and code_col is not None:
+                top_stock["_Mặt hàng"] = top_stock[code_col].astype(str) + " — " + top_stock[name_col].astype(str)
+            elif name_col is not None:
+                top_stock["_Mặt hàng"] = top_stock[name_col].astype(str)
+            elif code_col is not None:
+                top_stock["_Mặt hàng"] = top_stock[code_col].astype(str)
+            else:
+                top_stock["_Mặt hàng"] = top_stock.index.astype(str)
+            top_stock = top_stock.dropna(subset=["_Tồn thực tế"]).nlargest(10, "_Tồn thực tế")
+            fig_stock = px.bar(top_stock, x="_Mặt hàng", y="_Tồn thực tế", color_discrete_sequence=["#1769aa"])
+            fig_stock.update_layout(xaxis_title="", yaxis_title=f"Số lượng ({units[0] if len(units) == 1 else 'đơn vị'})", margin=dict(l=8, r=8, t=12, b=8), height=300)
+            fig_stock.update_xaxes(tickangle=-20)
+            st.plotly_chart(fig_stock, use_container_width=True, config={"displayModeBar": False})
+            st.caption("Chưa có đủ cột nhập và xuất; biểu đồ đang hiển thị 10 mặt hàng tồn nhiều nhất.")
+        else:
+            st.info("Chưa có cột số lượng nhập/xuất hoặc tồn kho đủ rõ để vẽ biểu đồ.")
+
+    with right_chart:
+        st.markdown("### 🧩 Cơ cấu tồn kho")
+        if category_col is not None:
+            composition = df.copy()
+            if stock_col is not None and not stock_values.empty and len(units) <= 1:
+                composition["_Giá trị biểu đồ"] = _numeric_column(composition[stock_col])
+                composition_label = f"Theo số lượng tồn{f' ({units[0]})' if len(units) == 1 else ''}"
+            else:
+                composition["_Giá trị biểu đồ"] = 1
+                composition_label = "Theo số mặt hàng"
+            composition[category_col] = composition[category_col].fillna("Chưa phân loại").astype(str)
+            composition = composition.groupby(category_col, dropna=False)["_Giá trị biểu đồ"].sum().reset_index()
+            composition = composition[composition["_Giá trị biểu đồ"] > 0].nlargest(8, "_Giá trị biểu đồ")
+            if not composition.empty:
+                fig_mix = px.pie(
+                    composition, names=category_col, values="_Giá trị biểu đồ", hole=0.58,
+                    color_discrete_sequence=["#1769aa", "#2997e8", "#8bbbe6", "#f79432", "#b7cce0", "#5d8fc3"],
+                )
+                fig_mix.update_layout(
+                    legend_title="", margin=dict(l=8, r=8, t=12, b=8), height=300,
+                    annotations=[dict(text=f"{len(df):,}<br>mặt hàng", x=0.5, y=0.5, showarrow=False, font_size=15)],
+                )
+                st.plotly_chart(fig_mix, use_container_width=True, config={"displayModeBar": False})
+                st.caption(composition_label)
+            else:
+                st.info("Chưa có dữ liệu nhóm hàng hợp lệ để thể hiện cơ cấu.")
+        elif stock_col is not None and not stock_values.empty:
+            status = pd.DataFrame({"Tồn": _numeric_column(df[stock_col])})
+            if min_stock_col is not None:
+                minimum = _numeric_column(df[min_stock_col])
+                status["Trạng thái"] = "Còn hàng"
+                status.loc[status["Tồn"] <= minimum, "Trạng thái"] = "Tồn thấp"
+                status.loc[status["Tồn"] == 0, "Trạng thái"] = "Hết hàng"
+                status.loc[status["Tồn"] < 0, "Trạng thái"] = "Tồn âm"
+            else:
+                status["Trạng thái"] = "Còn hàng"
+                status.loc[status["Tồn"] == 0, "Trạng thái"] = "Hết hàng"
+                status.loc[status["Tồn"] < 0, "Trạng thái"] = "Tồn âm"
+            counts = status["Trạng thái"].value_counts().rename_axis("Trạng thái").reset_index(name="Số mặt hàng")
+            fig_status = px.pie(counts, names="Trạng thái", values="Số mặt hàng", hole=0.58,
+                                color_discrete_sequence=["#1769aa", "#2997e8", "#f79432", "#b7cce0"])
+            fig_status.update_layout(legend_title="", margin=dict(l=8, r=8, t=12, b=8), height=300)
+            st.plotly_chart(fig_status, use_container_width=True, config={"displayModeBar": False})
+            st.caption("Chưa nhận diện được cột nhóm hàng; biểu đồ thể hiện tình trạng tồn.")
+        else:
+            st.info("Chưa có dữ liệu để phân loại cơ cấu tồn kho.")
+
+    st.divider()
+    title_col, all_col = st.columns([5, 1])
+    with title_col:
+        st.markdown("### 📋 Danh sách hàng hóa")
+    with all_col:
+        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+        st.caption("Mở bộ lọc bên dưới để xem tất cả")
+
+    display_frame = df.copy()
+    if stock_col is not None:
+        display_frame["_Sắp xếp tồn"] = _numeric_column(display_frame[stock_col])
+        display_frame = display_frame.sort_values("_Sắp xếp tồn", ascending=False, na_position="last")
+
+    visible_cols = [col for col in [code_col, name_col, category_col, stock_col, unit_col] if col is not None]
+    if min_stock_col is not None and min_stock_col not in visible_cols:
+        visible_cols.append(min_stock_col)
+    if not visible_cols:
+        visible_cols = list(df.columns[:6])
+    preview = display_frame[visible_cols].head(5).copy()
+    if stock_col is not None:
+        preview["Trạng thái"] = "Còn hàng"
+        current_values = _numeric_column(preview[stock_col])
+        preview.loc[current_values == 0, "Trạng thái"] = "Hết hàng"
+        preview.loc[current_values < 0, "Trạng thái"] = "Tồn âm"
+        if min_stock_col is not None:
+            minimum_values = _numeric_column(preview[min_stock_col])
+            low_mask = (current_values > 0) & minimum_values.notna() & (current_values <= minimum_values)
+            preview.loc[low_mask, "Trạng thái"] = "Sắp hết"
+        preview.loc[current_values.isna(), "Trạng thái"] = "Chưa xác định"
+    st.dataframe(preview, use_container_width=True, hide_index=True, height=230)
+
+    with st.expander("📂 Dữ liệu chi tiết theo file / sheet", expanded=False):
+        detail_name = st.selectbox("Chọn file / sheet", list(sheets_dict.keys()), key="detail_sheet_selector")
+        detail_df = sheets_dict[detail_name]
+        st.dataframe(detail_df, use_container_width=True, hide_index=True, height=420)
+
 
 # ── GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH ─────────────────────────────────────────
 st.markdown("# 🏭 AI Quản Lý Kho Hàng")
@@ -412,8 +1369,7 @@ if not sheets_data:
 tab_data, tab_chat = st.tabs(["📊 Xem dữ liệu", "💬 Hỏi đáp Thông Minh"])
 
 with tab_data:
-    selected_tab = st.selectbox("Chọn Tab:", list(sheets_data.keys()))
-    st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
+    render_warehouse_dashboard(sheets_data)
 
 with tab_chat:
     for msg in st.session_state.messages:
@@ -423,29 +1379,35 @@ with tab_chat:
             else:
                 st.markdown(msg["content"])
 
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
+    # Ô nhập câu hỏi của Streamlit được ghim ở cuối vùng ứng dụng,
+    # để người dùng có thể hỏi tiếp dù đang xem phần trên hay dưới của hội thoại.
+    question = st.chat_input(
+        "Gõ câu hỏi bất kỳ... (Enter để gửi)",
+        key="chat_question_input",
+    )
 
-    if st.button("🚀 Gửi câu hỏi", type="primary"):
-        if question:
-            with st.chat_message("user"): 
-                st.markdown(question)
-            
-            st.session_state.messages.append({"role": "user", "content": question})
-            save_json_data(CHAT_PATH, st.session_state.messages)
+    if question and question.strip():
+        question = question.strip()
+        with st.chat_message("user"):
+            st.markdown(question)
 
-            with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
-                local_answer, need_ai = auto_route_and_process(question, sheets_data)
+        st.session_state.messages.append({"role": "user", "content": question})
+        save_chat_history()
 
-                if not need_ai:
-                    final_ans = local_answer
-                else:
-                    try:
-                        final_ans = ask_ai(question, sheets_data)
-                    except Exception as e:
-                        final_ans = f"❌ {str(e)}"
+        with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
+            local_answer, need_ai = auto_route_and_process(question, sheets_data)
 
-                with st.chat_message("assistant"):
-                    render_message_and_chart(final_ans, sheets_data)
-                
-                st.session_state.messages.append({"role": "assistant", "content": final_ans})
-                save_json_data(CHAT_PATH, st.session_state.messages)
+            if not need_ai:
+                final_ans = local_answer
+            else:
+                try:
+                    final_ans = ask_ai(question, sheets_data, st.session_state.messages[:-1])
+                except Exception as e:
+                    final_ans = f"❌ {str(e)}"
+
+            with st.chat_message("assistant"):
+                render_message_and_chart(final_ans, sheets_data)
+
+            st.session_state.messages.append({"role": "assistant", "content": final_ans})
+            save_chat_history()
+        st.rerun()
