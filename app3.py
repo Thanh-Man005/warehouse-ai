@@ -908,12 +908,38 @@ def _find_min_stock_column(df):
 
 
 def _numeric_column(series):
-    """Chuyển cột số về numeric, chấp nhận số có dấu phẩy và khoảng trắng."""
-    return pd.to_numeric(
-        series.astype(str).str.replace(",", "", regex=False).str.replace(" ", "", regex=False),
-        errors="coerce",
-    )
+    """Đọc số từ Excel/Sheets theo cả định dạng Việt Nam và quốc tế."""
+    def parse_one(value):
+        if pd.isna(value):
+            return float("nan")
+        text = str(value).strip().replace(" ", "")
+        if not text or text.lower() in {"nan", "none", "nat", "-"}:
+            return float("nan")
 
+        if "," in text and "." in text:
+            # Ký tự phân cách xuất hiện cuối cùng thường là dấu thập phân.
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "," in text:
+            if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+", text):
+                text = text.replace(",", "")
+            else:
+                text = text.replace(",", ".")
+        elif "." in text:
+            # Ví dụ "1.250" thường là 1.250 đơn vị theo chuẩn quốc tế,
+            # nhưng cũng là 1.250 (một nghìn hai trăm năm mươi) theo cách ghi VN.
+            # Chỉ coi dấu chấm là phân cách hàng nghìn khi nhóm 3 chữ số lặp rõ ràng.
+            if re.fullmatch(r"[+-]?\d{1,3}(\.\d{3})+", text):
+                text = text.replace(".", "")
+
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    return pd.Series(series.map(parse_one), index=series.index, dtype="float64")
 
 def render_warehouse_dashboard(sheets_dict):
     """Dashboard kho kiểu tổng quan: chỉ hiển thị số liệu nhận diện được từ nguồn thật."""
@@ -1011,31 +1037,119 @@ def render_warehouse_dashboard(sheets_dict):
 
     def show_number(value):
         if value is None:
-            return "Chưa có dữ liệu"
+            return "Chưa xác định"
         return f"{value:,.2f}".rstrip("0").rstrip(".")
 
-    if stock_col is not None and not stock_values.empty:
-        if len(units) > 1:
-            stock_display = "Nhiều đơn vị"
+    # Đếm phiên bằng mã phiếu/chứng từ/giao dịch, không nhầm tổng số lượng thành số phiên.
+    document_col_groups = [
+        ["mã phiếu"], ["số phiếu"], ["mã chứng từ"], ["số chứng từ"],
+        ["mã giao dịch"], ["số giao dịch"], ["mã phiên"], ["mã đơn"],
+        ["transaction id"], ["voucher no"], ["document no"], ["receipt no"],
+    ]
+
+    def count_sessions(direction):
+        if direction == "in":
+            movement_groups = [
+                ["số lượng nhập"], ["lượng nhập"], ["sl nhập"], ["nhập kho"],
+                ["inbound qty"], ["qty in"],
+            ]
+            direction_terms = ["nhập", "nhap", "inbound", "receipt"]
+            opposite_terms = ["xuất", "xuat", "outbound", "shipment"]
+        elif direction == "out":
+            movement_groups = [
+                ["số lượng xuất"], ["lượng xuất"], ["sl xuất"], ["xuất kho"],
+                ["outbound qty"], ["qty out"],
+            ]
+            direction_terms = ["xuất", "xuat", "outbound", "shipment"]
+            opposite_terms = ["nhập", "nhap", "inbound", "receipt"]
         else:
-            stock_display = show_number(float(stock_values.sum()))
-            if len(units) == 1:
-                stock_display += f" {units[0]}"
-            elif unit_col is None:
-                stock_display += " (chưa rõ ĐVT)"
+            movement_groups = [
+                ["số lượng điều chuyển"], ["lượng điều chuyển"], ["sl điều chuyển"],
+                ["transfer qty"],
+            ]
+            direction_terms = ["điều chuyển", "dieu chuyen", "transfer"]
+            opposite_terms = []
+
+        session_total = 0
+        found = False
+        for sheet_label, frame in sheets_dict.items():
+            if frame is None or frame.dropna(how="all").empty:
+                continue
+            clean = frame.dropna(how="all").copy()
+            label = str(sheet_label).lower()
+            has_direction_name = any(term in label for term in direction_terms)
+            has_opposite_name = any(term in label for term in opposite_terms)
+            qty_col = _find_column(clean, movement_groups)
+
+            # Chỉ đếm trong sheet có tên đúng luồng hoặc có cột số lượng đúng luồng.
+            if has_opposite_name and not has_direction_name:
+                continue
+            if not has_direction_name and qty_col is None:
+                continue
+
+            doc_col = _find_column(clean, document_col_groups)
+            if doc_col is None:
+                continue
+
+            session_rows = clean[doc_col].astype(str).str.strip()
+            valid_mask = clean[doc_col].notna() & ~session_rows.str.lower().isin(["", "nan", "none", "nat"])
+            if qty_col is not None:
+                qty = _numeric_column(clean[qty_col])
+                valid_mask = valid_mask & qty.notna() & (qty > 0)
+            session_ids = session_rows[valid_mask].drop_duplicates()
+            if not session_ids.empty:
+                session_total += int(session_ids.nunique())
+                found = True
+
+        return session_total if found else None
+
+    # Số sản phẩm được đếm theo mã duy nhất; nếu không có mã thì dùng tên duy nhất.
+    if code_col is not None:
+        product_values = df[code_col].astype(str).str.strip()
+        product_count = int(product_values[
+            df[code_col].notna() & ~product_values.str.lower().isin(["", "nan", "none", "nat"])
+        ].nunique())
+    elif name_col is not None:
+        product_values = df[name_col].astype(str).str.strip()
+        product_count = int(product_values[
+            df[name_col].notna() & ~product_values.str.lower().isin(["", "nan", "none", "nat"])
+        ].nunique())
     else:
-        stock_display = "Chưa xác định"
+        product_count = int(len(df))
 
-    inbound_metric, outbound_metric, stock_metric, transfer_metric = st.columns(4)
-    inbound_metric.metric("Nhập kho", show_number(inbound_total), icon="📥", border=True,
-                          help=f"Cột nguồn: {inbound_col}" if inbound_col else "Chưa tìm thấy cột số lượng nhập trong bảng đang chọn.")
-    outbound_metric.metric("Xuất kho", show_number(outbound_total), icon="📤", border=True,
-                           help=f"Cột nguồn: {outbound_col}" if outbound_col else "Chưa tìm thấy cột số lượng xuất trong bảng đang chọn.")
-    stock_metric.metric("Tồn kho", stock_display, icon="📦", border=True,
-                        help=f"Nguồn: {selected_name} · Cột tồn: {stock_col or 'chưa nhận diện'}")
-    transfer_metric.metric("Điều chuyển", show_number(transfer_total), icon="🔁", border=True,
-                           help=f"Cột nguồn: {transfer_col}" if transfer_col else "Chưa tìm thấy cột số lượng điều chuyển trong bảng đang chọn.")
+    inbound_sessions = count_sessions("in")
+    outbound_sessions = count_sessions("out")
+    transfer_sessions = count_sessions("transfer")
 
+    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1.metric(
+        "Phiên nhập",
+        show_number(inbound_sessions),
+        icon="📥",
+        border=True,
+        help="Đếm mã phiếu/chứng từ nhập duy nhất trong dữ liệu giao dịch. Nếu chưa xác định được, cần có cột Mã phiếu hoặc Mã chứng từ.",
+    )
+    metric2.metric(
+        "Phiên xuất",
+        show_number(outbound_sessions),
+        icon="📤",
+        border=True,
+        help="Đếm mã phiếu/chứng từ xuất duy nhất trong dữ liệu giao dịch. Nếu chưa xác định được, cần có cột Mã phiếu hoặc Mã chứng từ.",
+    )
+    metric3.metric(
+        "Sản phẩm",
+        f"{product_count:,}",
+        icon="📦",
+        border=True,
+        help="Số mã sản phẩm duy nhất (hoặc tên sản phẩm duy nhất nếu bảng không có cột mã). Đây không phải tổng số lượng tồn.",
+    )
+    metric4.metric(
+        "Phiên điều chuyển",
+        show_number(transfer_sessions),
+        icon="🔁",
+        border=True,
+        help="Đếm mã phiếu/chứng từ điều chuyển duy nhất nếu dữ liệu có thể nhận diện.",
+    )
     st.caption(
         f"Nguồn dữ liệu: **{selected_name}**"
         + (f" · Tồn kho lấy từ cột **{stock_col}**" if stock_col is not None else "")
@@ -1185,6 +1299,7 @@ def render_warehouse_dashboard(sheets_dict):
     with st.expander("🔎 Tra cứu và lọc nâng cao", expanded=False):
         filter1, filter2, filter3 = st.columns([1.2, 1, 2])
         filtered = df.copy()
+
         with filter1:
             if category_col is not None:
                 category_options = ["Tất cả"] + sorted(df[category_col].dropna().astype(str).unique().tolist())
@@ -1193,37 +1308,94 @@ def render_warehouse_dashboard(sheets_dict):
                     filtered = filtered[filtered[category_col].astype(str) == category_value]
             else:
                 st.caption("Nguồn này không có cột nhóm hàng.")
+
         with filter2:
             unit_options = ["Tất cả"] + units if units else ["Tất cả"]
             unit_value = st.selectbox("Đơn vị tính", unit_options, key="warehouse_unit_filter")
             if unit_col is not None and unit_value != "Tất cả":
                 filtered = filtered[filtered[unit_col].astype(str).str.strip() == unit_value]
+
         with filter3:
-            search_value = st.text_input("Tìm theo mã hoặc tên", key="warehouse_item_search", placeholder="Nhập mã hoặc tên hàng")
+            search_value = st.text_input(
+                "Tìm theo mã hoặc tên",
+                key="warehouse_item_search",
+                placeholder="Nhập mã hoặc tên hàng",
+            )
             if search_value.strip():
                 searchable = [col for col in [code_col, name_col] if col is not None] or list(filtered.columns)
                 mask = pd.Series(False, index=filtered.index)
                 for col in searchable:
-                    mask = mask | filtered[col].astype(str).str.contains(search_value.strip(), case=False, na=False, regex=False)
+                    mask = mask | filtered[col].astype(str).str.contains(
+                        search_value.strip(), case=False, na=False, regex=False
+                    )
                 filtered = filtered[mask]
 
         if stock_col is not None:
             filter_options = ["Tất cả", "Sắp hết / tồn thấp", "Hết hàng (0)", "Tồn âm", "Còn hàng"]
             stock_filter = st.selectbox("Tình trạng tồn", filter_options, key="warehouse_stock_filter")
-            values = _numeric_column(filtered[stock_col])
+
+            low_method = "Theo ngưỡng bạn nhập"
+            low_threshold = None
+            threshold_unit = None
             if stock_filter == "Sắp hết / tồn thấp":
+                st.markdown("**Thiết lập ngưỡng tồn thấp**")
                 if min_stock_col is not None:
+                    low_method = st.radio(
+                        "Cách xác định tồn thấp",
+                        ["Theo ngưỡng bạn nhập", "Theo cột tồn tối thiểu trong bảng"],
+                        horizontal=True,
+                        key="warehouse_low_stock_method",
+                    )
+                else:
+                    st.caption("Bảng không có cột tồn tối thiểu; hãy nhập ngưỡng bên dưới.")
+
+                if low_method == "Theo ngưỡng bạn nhập":
+                    # Không so sánh các mặt hàng dùng đơn vị khác nhau với cùng một ngưỡng.
+                    if len(units) > 1 and unit_value == "Tất cả" and unit_col is not None:
+                        threshold_unit = st.selectbox(
+                            "Áp dụng ngưỡng cho đơn vị",
+                            units,
+                            key="warehouse_low_stock_unit",
+                            help="Chọn một đơn vị tính vì không thể so sánh trực tiếp, ví dụ kg với cái.",
+                        )
+                    elif unit_value != "Tất cả":
+                        threshold_unit = unit_value
+
+                    chosen_unit_label = threshold_unit or (units[0] if len(units) == 1 else "đơn vị đang chọn")
+                    low_threshold = st.number_input(
+                        f"Số lượng tồn tối đa để xem là sắp hết ({chosen_unit_label})",
+                        min_value=0.0,
+                        value=10.0,
+                        step=1.0,
+                        key="warehouse_low_stock_threshold_input",
+                        help="Ví dụ nhập 10 để xem mặt hàng còn trên 0 và không quá 10 đơn vị.",
+                    )
+
+            values = _numeric_column(filtered[stock_col])
+
+            if stock_filter == "Sắp hết / tồn thấp":
+                if low_method == "Theo cột tồn tối thiểu trong bảng" and min_stock_col is not None:
                     minimum = _numeric_column(filtered[min_stock_col])
                     filtered = filtered[(values > 0) & minimum.notna() & (values <= minimum)]
-                else:
-                    st.caption("Chưa có cột tồn tối thiểu trong sheet nên không thể tự xác định hàng sắp hết.")
-                    filtered = filtered.iloc[0:0]
+                elif low_threshold is not None:
+                    if threshold_unit is not None and unit_col is not None:
+                        filtered = filtered[filtered[unit_col].astype(str).str.strip() == threshold_unit]
+                        values = _numeric_column(filtered[stock_col])
+                    filtered = filtered[(values > 0) & (values <= low_threshold)]
             elif stock_filter == "Hết hàng (0)":
                 filtered = filtered[values == 0]
             elif stock_filter == "Tồn âm":
                 filtered = filtered[values < 0]
             elif stock_filter == "Còn hàng":
                 filtered = filtered[values > 0]
+
+            if stock_filter == "Sắp hết / tồn thấp" and filtered.empty:
+                if low_method == "Theo cột tồn tối thiểu trong bảng" and min_stock_col is not None:
+                    st.info("Không tìm thấy mặt hàng nào lớn hơn 0 nhưng thấp hơn hoặc bằng mức tồn tối thiểu trong dữ liệu.")
+                else:
+                    st.info("Không tìm thấy mặt hàng nào có tồn dương và không vượt ngưỡng đã chọn. Hãy thử tăng ngưỡng hoặc kiểm tra cột tồn/đơn vị tính.")
+        else:
+            st.warning("Chưa nhận diện được cột tồn kho trong bảng, nên không thể lọc theo số lượng.")
 
         st.caption(f"Kết quả: **{len(filtered):,}** mặt hàng")
         filter_cols = [col for col in [code_col, name_col, category_col, stock_col, min_stock_col, unit_col] if col is not None]
