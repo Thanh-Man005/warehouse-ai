@@ -330,10 +330,16 @@ def answer_followup_stock_extreme(question: str, sheets_dict: dict, chat_history
         "các sản phẩm trên", "những sản phẩm trên", "các mặt hàng trên",
         "những mặt hàng đó", "danh sách trên", "danh sách vừa rồi",
         "trong số đó", "nhóm sản phẩm đó", "các sản phẩm đó",
+        "những sản phẩm đó", "các mặt hàng đó", "trong danh sách đó",
+        "các sản phẩm vừa nêu", "những sản phẩm vừa nêu",
+        "các mặt hàng vừa nêu", "sản phẩm vừa tìm", "mặt hàng vừa tìm",
+        "trong nhóm vừa rồi", "trong danh sách vừa liệt kê",
     ])
     asks_extreme = any(term in q for term in [
         "thấp nhất", "ít nhất", "tồn thấp", "tồn kho thấp nhất",
-        "cao nhất", "nhiều nhất", "tồn kho cao nhất",
+        "ít hàng nhất", "số lượng thấp nhất", "còn ít nhất",
+        "cao nhất", "nhiều nhất", "tồn kho cao nhất", "còn nhiều nhất",
+        "số lượng cao nhất",
     ])
     if not (refers_back and asks_extreme):
         return None
