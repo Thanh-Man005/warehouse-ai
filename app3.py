@@ -22,6 +22,28 @@ st.markdown("""
 <style>
     .main .block-container { padding-top: 1.5rem; max-width: 1100px; }
     .stChatMessage { border-radius: 12px; }
+
+    /* Ghim ô hỏi đáp theo đáy khung nhìn trình duyệt, không theo cuối lịch sử chat. */
+    div[data-testid="stChatInput"] {
+        position: fixed !important;
+        bottom: 1rem !important;
+        left: max(17rem, calc((100vw - 1100px) / 2 + 17rem)) !important;
+        right: max(1rem, calc((100vw - 1100px) / 2 + 1rem)) !important;
+        width: auto !important;
+        z-index: 9999 !important;
+        background: var(--background-color);
+        padding-top: 0.35rem;
+        padding-bottom: 0.35rem;
+    }
+
+    @media (max-width: 700px) {
+        div[data-testid="stChatInput"] {
+            left: 0.75rem !important;
+            right: 0.75rem !important;
+            bottom: 0.5rem !important;
+        }
+    }
+
     .login-box {
         max-width: 420px;
         margin: 50px auto;
