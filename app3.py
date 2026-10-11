@@ -219,6 +219,12 @@ if not st.session_state.logged_in:
     render_login_screen()
     st.stop()  # Dừng chương trình tại đây nếu chưa đăng nhập
 
+# Nạp lịch sử riêng cho tài khoản sau khi đã xác thực, trước khi vẽ sidebar.
+current_username = st.session_state.username
+if st.session_state.get("chat_owner") != current_username:
+    st.session_state.messages = load_json_data(chat_path_for_user(current_username), [])
+    st.session_state.chat_owner = current_username
+
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
 
@@ -250,8 +256,17 @@ if "data_source" not in st.session_state:
         "data_source", "🌐 Link Google Trang tính"
     )
 
-if "messages" not in st.session_state:
-    st.session_state.messages = load_json_data(CHAT_PATH, [])
+def chat_path_for_user(username: str) -> Path:
+    """Tách lịch sử theo tài khoản để người dùng không thấy chat của nhau."""
+    safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(username or "guest"))
+    return DATA_DIR / f"chat_history_{safe_username}.json"
+
+def save_chat_history():
+    """Lưu lịch sử của tài khoản đang đăng nhập."""
+    username = st.session_state.get("username", "")
+    if username:
+        save_json_data(chat_path_for_user(username), st.session_state.get("messages", []))
+
 
 def auto_route_and_process(question: str, sheets_dict: dict):
     q_low = question.lower().strip()
@@ -336,7 +351,7 @@ def load_all_sheets_from_file(path: str) -> dict:
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
 
 
-def ask_ai(question: str, sheets_dict: dict) -> str:
+def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     api_key = get_gemini_api_key()
     if not api_key:
         raise Exception(
@@ -351,11 +366,25 @@ def ask_ai(question: str, sheets_dict: dict) -> str:
             prompt_data.append("=== TAB [" + str(name) + "] ===\n" + df_clean.head(50).to_string(index=False))
             
     context = "\n\n".join(prompt_data)
-    
+
+    # Đưa các lượt hội thoại gần nhất vào prompt để câu hỏi nối tiếp có ngữ cảnh.
+    history_lines = []
+    for item in (chat_history or [])[-16:]:
+        role = "Người dùng" if item.get("role") == "user" else "Trợ lý"
+        text_value = str(item.get("content", "")).strip()
+        if text_value:
+            history_lines.append(f"{role}: {text_value[:3500]}")
+    history_context = "\n".join(history_lines)
+
     system_text = (
-        "Bạn là chuyên gia phân tích kho hàng. Dưới đây là dữ liệu kho hàng hiện tại (tối đa 50 dòng):\n\n"
+        "Bạn là chuyên gia phân tích kho hàng. Dữ liệu kho hàng bên dưới chỉ là dữ liệu hiện tại; "
+        "lịch sử hội thoại được cung cấp để hiểu câu hỏi nối tiếp.\n\n"
         + context + "\n\n"
+        "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Chưa có lịch sử)") + "\n\n"
         "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
+        "0. Nếu người dùng nói 'các sản phẩm trên', 'những mặt hàng đó', 'trong danh sách vừa rồi' hoặc tương tự, "
+        "hãy chỉ xét đúng các sản phẩm thuộc câu trả lời trước liên quan; không tự mở rộng sang toàn bộ kho. "
+        "Nếu thiếu tên/mã hoặc số liệu để kết luận, hãy nói rõ điều còn thiếu, không đoán.\n"
         "1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.\n"
         "2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:\n"
         "| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |\n"
@@ -607,9 +636,25 @@ with st.sidebar:
             st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
 
     st.divider()
+    chat_messages = st.session_state.get("messages", [])
+    user_question_count = sum(1 for m in chat_messages if m.get("role") == "user")
+    assistant_answer_count = sum(1 for m in chat_messages if m.get("role") == "assistant")
+    st.markdown("### 💬 Lịch sử hội thoại")
+    st.metric("Số câu hỏi", user_question_count)
+    st.caption(f"Số câu trả lời: {assistant_answer_count}")
+    if chat_messages:
+        with st.expander("Xem các câu hỏi đã hỏi", expanded=False):
+            question_number = 0
+            for msg in chat_messages:
+                if msg.get("role") == "user":
+                    question_number += 1
+                    preview = re.sub(r"\s+", " ", str(msg.get("content", ""))).strip()
+                    st.caption(f"{question_number}. {preview[:120]}")
+    else:
+        st.caption("Chưa có hội thoại nào cho tài khoản này.")
     if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
         st.session_state.messages = []
-        save_json_data(CHAT_PATH, [])
+        save_chat_history()
         st.rerun()
 
 # ── GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH ─────────────────────────────────────────
@@ -633,29 +678,32 @@ with tab_chat:
             else:
                 st.markdown(msg["content"])
 
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
+    with st.form("chat_question_form", clear_on_submit=True):
+        question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
+        send_question = st.form_submit_button("🚀 Gửi câu hỏi", type="primary", use_container_width=True)
 
-    if st.button("🚀 Gửi câu hỏi", type="primary"):
-        if question:
-            with st.chat_message("user"): 
-                st.markdown(question)
-            
-            st.session_state.messages.append({"role": "user", "content": question})
-            save_json_data(CHAT_PATH, st.session_state.messages)
+    if send_question and question.strip():
+        question = question.strip()
+        with st.chat_message("user"):
+            st.markdown(question)
 
-            with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
-                local_answer, need_ai = auto_route_and_process(question, sheets_data)
+        st.session_state.messages.append({"role": "user", "content": question})
+        save_chat_history()
 
-                if not need_ai:
-                    final_ans = local_answer
-                else:
-                    try:
-                        final_ans = ask_ai(question, sheets_data)
-                    except Exception as e:
-                        final_ans = f"❌ {str(e)}"
+        with st.spinner("🔄 AI đang phân tích dữ liệu kho..."):
+            local_answer, need_ai = auto_route_and_process(question, sheets_data)
 
-                with st.chat_message("assistant"):
-                    render_message_and_chart(final_ans, sheets_data)
-                
-                st.session_state.messages.append({"role": "assistant", "content": final_ans})
-                save_json_data(CHAT_PATH, st.session_state.messages)
+            if not need_ai:
+                final_ans = local_answer
+            else:
+                try:
+                    final_ans = ask_ai(question, sheets_data, st.session_state.messages[:-1])
+                except Exception as e:
+                    final_ans = f"❌ {str(e)}"
+
+            with st.chat_message("assistant"):
+                render_message_and_chart(final_ans, sheets_data)
+
+            st.session_state.messages.append({"role": "assistant", "content": final_ans})
+            save_chat_history()
+        st.rerun()
