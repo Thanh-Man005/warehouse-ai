@@ -820,11 +820,14 @@ with tab_chat:
             else:
                 st.markdown(msg["content"])
 
-    with st.form("chat_question_form", clear_on_submit=True):
-        question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
-        send_question = st.form_submit_button("🚀 Gửi câu hỏi", type="primary", use_container_width=True)
+    # Ô nhập câu hỏi của Streamlit được ghim ở cuối vùng ứng dụng,
+    # để người dùng có thể hỏi tiếp dù đang xem phần trên hay dưới của hội thoại.
+    question = st.chat_input(
+        "Gõ câu hỏi bất kỳ... (Enter để gửi)",
+        key="chat_question_input",
+    )
 
-    if send_question and question.strip():
+    if question and question.strip():
         question = question.strip()
         with st.chat_message("user"):
             st.markdown(question)
