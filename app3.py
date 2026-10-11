@@ -382,16 +382,13 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         "lịch sử hội thoại được cung cấp để hiểu câu hỏi nối tiếp.\n\n"
         + context + "\n\n"
         "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Chưa có lịch sử)") + "\n\n"
-        "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
-        "0. Nếu người dùng nói 'các sản phẩm trên', 'những mặt hàng đó', 'trong danh sách vừa rồi' hoặc tương tự, "
-        "hãy chỉ xét đúng các sản phẩm thuộc câu trả lời trước liên quan; không tự mở rộng sang toàn bộ kho. "
-        "Nếu thiếu tên/mã hoặc số liệu để kết luận, hãy nói rõ điều còn thiếu, không đoán.\n"
-        "1. Trả lời HOÀN CHỈNH, ĐẦY ĐỦ từ đầu đến cuối.\n"
-        "2. Trình bày rõ ràng dưới dạng BẢNG MARKDOWN nếu có danh sách/số lượng:\n"
-        "| STT | Mã VT | Tên Vật Tư | Số Lượng | Ghi Chú |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "3. Trả lời trực tiếp vào trọng tâm câu hỏi.\n"
-        "4. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
+        "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\\n"
+        "0. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm trong câu trả lời trước liên quan; không mở rộng sang toàn bộ kho. Nếu thiếu dữ liệu, nói rõ, không đoán.\\n"
+        "1. Ưu tiên câu trả lời NGẮN GỌN, trực tiếp: nêu kết quả chính ngay đầu; thường chỉ 1-3 câu, chỉ thêm bảng khi giúp đọc số liệu dễ hơn.\\n"
+        "2. Với câu hỏi so sánh/xếp hạng, chỉ đưa tên/mã, số lượng và đơn vị cần thiết; nêu kết luận một lần. Không nhắc lại yêu cầu, không mô tả quy trình tra cứu, không lặp lại cùng số liệu ở nhiều đoạn, không thêm lời dẫn hoặc kết luận dài dòng.\\n"
+        "3. Vẫn phải đủ thông tin để kiểm chứng: giữ nguyên tên/mã sản phẩm, số liệu và đơn vị; nếu so sánh nhiều sản phẩm thì dùng bảng gọn. Không bỏ các dữ kiện quan trọng chỉ để rút ngắn.\\n"
+        "4. Nếu người dùng yêu cầu phân tích chi tiết, giải thích hoặc báo cáo đầy đủ thì mới trả lời dài hơn theo yêu cầu.\\n"
+        "5. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
     )
 
     body = {
