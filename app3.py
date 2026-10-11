@@ -28,7 +28,7 @@ st.markdown("""
     .warehouse-heading p { margin: 0; color: #6b7d92; font-size: 0.95rem; }
     .warehouse-eyebrow { font-size: 0.68rem; letter-spacing: 0.12em; font-weight: 700; color: #3b82b8; }
 
-    /* Ghim ô hỏi đáp theo đáy khung nhìn trình duyệt, không theo cuối lịch sử chat. */
+    /* Ghim ô hỏi đáp theo đáy màn hình; mặc định khi sidebar thu gọn. */
     div[data-testid="stChatInput"] {
         position: fixed !important;
         bottom: 1rem !important;
@@ -39,10 +39,18 @@ st.markdown("""
         background: var(--background-color);
         padding-top: 0.35rem;
         padding-bottom: 0.35rem;
+        transition: left 180ms ease, right 180ms ease, width 180ms ease;
+    }
+
+    /* Sidebar mở: dịch ô chat sang phải và thu hẹp theo vùng nội dung còn lại. */
+    .stApp:has([data-testid="stSidebar"][aria-expanded="true"]) div[data-testid="stChatInput"] {
+        left: max(22rem, calc((100vw - 1320px) / 2 + 22rem)) !important;
+        right: max(1rem, calc((100vw - 1320px) / 2)) !important;
     }
 
     @media (max-width: 700px) {
-        div[data-testid="stChatInput"] {
+        div[data-testid="stChatInput"],
+        .stApp:has([data-testid="stSidebar"][aria-expanded="true"]) div[data-testid="stChatInput"] {
             left: 0.75rem !important;
             right: 0.75rem !important;
             bottom: 0.5rem !important;
