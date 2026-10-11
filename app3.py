@@ -250,8 +250,19 @@ if "data_source" not in st.session_state:
         "data_source", "🌐 Link Google Trang tính"
     )
 
-if "messages" not in st.session_state:
+# Lịch sử riêng theo tài khoản, tránh dùng chung hội thoại giữa nhiều người đăng nhập.
+safe_username = re.sub(r"[^A-Za-z0-9_.-]", "_", str(st.session_state.username)).strip("._-")
+if not safe_username:
+    safe_username = "user"
+CHAT_PATH = DATA_DIR / f"chat_history_{safe_username}.json"
+
+# Nạp lại lịch sử khi tài khoản đăng nhập thay đổi trong cùng phiên Streamlit.
+if st.session_state.get("messages_owner") != st.session_state.username:
     st.session_state.messages = load_json_data(CHAT_PATH, [])
+    st.session_state.messages_owner = st.session_state.username
+
+if not isinstance(st.session_state.messages, list):
+    st.session_state.messages = []
 
 def auto_route_and_process(question: str, sheets_dict: dict):
     q_low = question.lower().strip()
@@ -472,10 +483,10 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         "4. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
     )
 
-    # Gửi tối đa 10 tin nhắn trước đó cho Gemini để giữ ngữ cảnh hội thoại.
-    # Mỗi tin được giới hạn 2.000 ký tự để tránh gửi lịch sử quá dài.
+    # Gửi tối đa 20 tin nhắn gần nhất để giữ được nhiều lượt hội thoại liên quan.
+    # Mỗi tin giới hạn 4.000 ký tự nhằm cân bằng ngữ cảnh và kích thước yêu cầu.
     contents = []
-    for msg in (chat_history or [])[-10:]:
+    for msg in (chat_history or [])[-20:]:
         role = msg.get("role", "")
         if role not in ("user", "assistant"):
             continue
@@ -486,7 +497,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             "",
             message_text,
         ).strip()
-        message_text = message_text[:2000].strip()
+        message_text = message_text[:4000].strip()
         if not message_text:
             continue
 
@@ -587,6 +598,25 @@ with st.sidebar:
         st.session_state.username = ""
         st.session_state.user_role = ""
         st.rerun()
+
+    st.divider()
+
+    # Thống kê và xem nhanh lịch sử của tài khoản hiện tại.
+    user_messages = [m for m in st.session_state.messages if m.get("role") == "user"]
+    assistant_messages = [m for m in st.session_state.messages if m.get("role") == "assistant"]
+    st.markdown("### 💬 Lịch sử trò chuyện")
+    metric1, metric2 = st.columns(2)
+    metric1.metric("Câu hỏi", len(user_messages))
+    metric2.metric("Trả lời", len(assistant_messages))
+    with st.expander("🕘 Các câu hỏi gần đây", expanded=False):
+        if user_messages:
+            for idx, item in enumerate(reversed(user_messages[-10:]), start=1):
+                question_preview = re.sub(r"\s+", " ", str(item.get("content", ""))).strip()
+                if len(question_preview) > 100:
+                    question_preview = question_preview[:97] + "..."
+                st.caption(f"{idx}. {question_preview}")
+        else:
+            st.caption("Chưa có câu hỏi nào trong lịch sử.")
 
     st.divider()
 
@@ -772,9 +802,17 @@ with tab_chat:
             else:
                 st.markdown(msg["content"])
 
-    question = st.text_area("Gõ câu hỏi bất kỳ...", height=90, placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?")
+    with st.form("chat_question_form", clear_on_submit=True):
+        question = st.text_area(
+            "Gõ câu hỏi bất kỳ...",
+            height=90,
+            placeholder="VD: Vẽ biểu đồ biến động tài chính theo ngày?",
+            key="chat_question_input",
+        )
+        submitted = st.form_submit_button("🚀 Gửi câu hỏi", type="primary")
 
-    if st.button("🚀 Gửi câu hỏi", type="primary"):
+    if submitted:
+        question = question.strip()
         if question:
             with st.chat_message("user"): 
                 st.markdown(question)
