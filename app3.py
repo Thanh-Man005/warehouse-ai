@@ -64,15 +64,69 @@ def save_json_data(path: Path, data):
 
 
 def chat_path_for_user(username: str) -> Path:
-    """Tách lịch sử theo tài khoản để người dùng không thấy chat của nhau."""
+    """Tệp hội thoại riêng cho từng tài khoản."""
     safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(username or "guest"))
     return DATA_DIR / f"chat_history_{safe_username}.json"
 
+def load_chat_store(username: str) -> dict:
+    """Đọc các cuộc hội thoại; tự chuyển đổi định dạng lịch sử cũ."""
+    raw = load_json_data(chat_path_for_user(username), [])
+    if isinstance(raw, dict) and isinstance(raw.get("conversations"), list):
+        conversations = raw["conversations"]
+        active_id = raw.get("active_id")
+    elif isinstance(raw, list) and raw:
+        # Tương thích với lịch sử cũ vốn chỉ lưu một danh sách tin nhắn.
+        active_id = "legacy"
+        first_question = next((str(m.get("content", "")) for m in raw if m.get("role") == "user"), "Cuộc trò chuyện cũ")
+        conversations = [{
+            "id": active_id,
+            "title": first_question[:45] or "Cuộc trò chuyện cũ",
+            "updated_at": "",
+            "messages": raw,
+        }]
+    else:
+        conversations, active_id = [], None
+
+    if active_id not in [conv.get("id") for conv in conversations]:
+        active_id = conversations[0].get("id") if conversations else None
+    return {"active_id": active_id, "conversations": conversations}
+
 def save_chat_history():
-    """Lưu lịch sử của tài khoản đang đăng nhập."""
+    """Đồng bộ tin nhắn hiện tại vào cuộc hội thoại đang mở rồi lưu."""
     username = st.session_state.get("username", "")
-    if username:
-        save_json_data(chat_path_for_user(username), st.session_state.get("messages", []))
+    if not username:
+        return
+    conversations = st.session_state.get("conversations", [])
+    active_id = st.session_state.get("active_conversation_id")
+    for conv in conversations:
+        if conv.get("id") == active_id:
+            conv["messages"] = st.session_state.get("messages", [])
+            if not conv.get("title") or conv.get("title") == "Cuộc trò chuyện mới":
+                first_question = next((str(m.get("content", "")).strip() for m in conv["messages"] if m.get("role") == "user"), "")
+                if first_question:
+                    conv["title"] = first_question[:45] + ("…" if len(first_question) > 45 else "")
+            conv["updated_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+            break
+    save_json_data(chat_path_for_user(username), {
+        "active_id": active_id,
+        "conversations": conversations,
+    })
+
+def start_new_conversation():
+    """Tạo một hội thoại trống và chuyển sang hội thoại đó."""
+    import uuid
+    conversation_id = uuid.uuid4().hex
+    conversation = {
+        "id": conversation_id,
+        "title": "Cuộc trò chuyện mới",
+        "updated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        "messages": [],
+    }
+    st.session_state.conversations.insert(0, conversation)
+    st.session_state.active_conversation_id = conversation_id
+    st.session_state.messages = []
+    st.session_state.chat_selector_id = conversation_id
+    save_chat_history()
 
 # ── Kết nối Supabase (khóa chỉ được đọc từ Streamlit Secrets) ────────────────
 def get_supabase_settings():
@@ -231,11 +285,20 @@ if not st.session_state.logged_in:
     render_login_screen()
     st.stop()  # Dừng chương trình tại đây nếu chưa đăng nhập
 
-# Nạp lịch sử riêng cho tài khoản sau khi đã xác thực, trước khi vẽ sidebar.
+# Nạp kho hội thoại riêng cho tài khoản sau khi đăng nhập.
 current_username = st.session_state.username
 if st.session_state.get("chat_owner") != current_username:
-    st.session_state.messages = load_json_data(chat_path_for_user(current_username), [])
+    chat_store = load_chat_store(current_username)
+    st.session_state.conversations = chat_store["conversations"]
+    st.session_state.active_conversation_id = chat_store["active_id"]
     st.session_state.chat_owner = current_username
+    active_conv = next((x for x in st.session_state.conversations if x.get("id") == st.session_state.active_conversation_id), None)
+    st.session_state.messages = active_conv.get("messages", []) if active_conv else []
+    st.session_state.chat_selector_id = st.session_state.active_conversation_id
+
+# Luôn có một cuộc trò chuyện đang mở, nhưng chưa cần lưu cho đến khi có nội dung.
+if not st.session_state.get("active_conversation_id"):
+    start_new_conversation()
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 1 — TẢI CẤU HÌNH VÀ BỘ NHẬN DIỆN Ý ĐỊNH (0 TOKEN)
@@ -634,26 +697,35 @@ with st.sidebar:
             st.info("ℹ️ Đang sử dụng file Excel đã lưu sẵn.")
 
     st.divider()
-    chat_messages = st.session_state.get("messages", [])
-    user_question_count = sum(1 for m in chat_messages if m.get("role") == "user")
-    assistant_answer_count = sum(1 for m in chat_messages if m.get("role") == "assistant")
-    st.markdown("### 💬 Lịch sử hội thoại")
-    st.metric("Số câu hỏi", user_question_count)
-    st.caption(f"Số câu trả lời: {assistant_answer_count}")
-    if chat_messages:
-        with st.expander("Xem các câu hỏi đã hỏi", expanded=False):
-            question_number = 0
-            for msg in chat_messages:
-                if msg.get("role") == "user":
-                    question_number += 1
-                    preview = re.sub(r"\s+", " ", str(msg.get("content", ""))).strip()
-                    st.caption(f"{question_number}. {preview[:120]}")
-    else:
-        st.caption("Chưa có hội thoại nào cho tài khoản này.")
-    if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
-        st.session_state.messages = []
-        save_chat_history()
+    st.markdown("### 💬 Hội thoại")
+    if st.button("＋ Chat mới", key="start_new_chat", use_container_width=True):
+        start_new_conversation()
         st.rerun()
+
+    conversations = st.session_state.get("conversations", [])
+    if conversations:
+        conversation_labels = {
+            conv["id"]: (conv.get("title") or "Cuộc trò chuyện mới")
+            for conv in conversations
+        }
+        conversation_ids = [conv["id"] for conv in conversations]
+        active_id = st.session_state.get("active_conversation_id")
+        selected_index = conversation_ids.index(active_id) if active_id in conversation_ids else 0
+        selected_conversation_id = st.selectbox(
+            "Mở hội thoại cũ",
+            options=conversation_ids,
+            index=selected_index,
+            format_func=lambda value: conversation_labels.get(value, "Cuộc trò chuyện"),
+            key="chat_selector_id",
+            label_visibility="collapsed",
+        )
+        if selected_conversation_id != active_id:
+            st.session_state.active_conversation_id = selected_conversation_id
+            selected_conv = next((conv for conv in conversations if conv.get("id") == selected_conversation_id), None)
+            st.session_state.messages = selected_conv.get("messages", []) if selected_conv else []
+            st.rerun()
+    else:
+        st.caption("Chưa có cuộc trò chuyện nào.")
 
 # ── GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH ─────────────────────────────────────────
 st.markdown("# 🏭 AI Quản Lý Kho Hàng")
