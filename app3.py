@@ -62,6 +62,18 @@ def save_json_data(path: Path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
+def chat_path_for_user(username: str) -> Path:
+    """Tách lịch sử theo tài khoản để người dùng không thấy chat của nhau."""
+    safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(username or "guest"))
+    return DATA_DIR / f"chat_history_{safe_username}.json"
+
+def save_chat_history():
+    """Lưu lịch sử của tài khoản đang đăng nhập."""
+    username = st.session_state.get("username", "")
+    if username:
+        save_json_data(chat_path_for_user(username), st.session_state.get("messages", []))
+
 # ── Kết nối Supabase (khóa chỉ được đọc từ Streamlit Secrets) ────────────────
 def get_supabase_settings():
     try:
@@ -255,17 +267,6 @@ if "data_source" not in st.session_state:
     st.session_state.data_source = saved_config.get(
         "data_source", "🌐 Link Google Trang tính"
     )
-
-def chat_path_for_user(username: str) -> Path:
-    """Tách lịch sử theo tài khoản để người dùng không thấy chat của nhau."""
-    safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(username or "guest"))
-    return DATA_DIR / f"chat_history_{safe_username}.json"
-
-def save_chat_history():
-    """Lưu lịch sử của tài khoản đang đăng nhập."""
-    username = st.session_state.get("username", "")
-    if username:
-        save_json_data(chat_path_for_user(username), st.session_state.get("messages", []))
 
 
 def auto_route_and_process(question: str, sheets_dict: dict):
