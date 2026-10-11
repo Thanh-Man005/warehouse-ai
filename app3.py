@@ -68,14 +68,12 @@ def chat_path_for_user(username: str) -> Path:
     safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(username or "guest"))
     return DATA_DIR / f"chat_history_{safe_username}.json"
 
-def load_chat_store(username: str) -> dict:
-    """Đọc các cuộc hội thoại; tự chuyển đổi định dạng lịch sử cũ."""
-    raw = load_json_data(chat_path_for_user(username), [])
+def normalize_chat_store(raw) -> dict:
+    """Chuẩn hóa lịch sử mới và chuyển định dạng lịch sử cũ sang danh sách hội thoại."""
     if isinstance(raw, dict) and isinstance(raw.get("conversations"), list):
         conversations = raw["conversations"]
         active_id = raw.get("active_id")
     elif isinstance(raw, list) and raw:
-        # Tương thích với lịch sử cũ vốn chỉ lưu một danh sách tin nhắn.
         active_id = "legacy"
         first_question = next((str(m.get("content", "")) for m in raw if m.get("role") == "user"), "Cuộc trò chuyện cũ")
         conversations = [{
@@ -91,8 +89,70 @@ def load_chat_store(username: str) -> dict:
         active_id = conversations[0].get("id") if conversations else None
     return {"active_id": active_id, "conversations": conversations}
 
+def supabase_load_chat_store(username: str):
+    """Đọc hội thoại từ Supabase; trả về None nếu tài khoản chưa có bản ghi."""
+    url, _ = get_supabase_settings()
+    response = requests.get(
+        f"{url}/rest/v1/chat_history",
+        headers=supabase_headers(),
+        params={
+            "select": "username,active_id,conversations,updated_at",
+            "username": f"eq.{username}",
+            "limit": "1",
+        },
+        timeout=15,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không đọc được lịch sử chat từ Supabase (HTTP {response.status_code}).")
+    rows = response.json()
+    if not rows:
+        return None
+    return normalize_chat_store({
+        "active_id": rows[0].get("active_id"),
+        "conversations": rows[0].get("conversations", []),
+    })
+
+def supabase_save_chat_store(username: str, store: dict):
+    """Lưu toàn bộ danh sách hội thoại lên Supabase bằng upsert theo username."""
+    url, _ = get_supabase_settings()
+    response = requests.post(
+        f"{url}/rest/v1/chat_history",
+        headers={**supabase_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+        params={"on_conflict": "username"},
+        json={
+            "username": username,
+            "active_id": store.get("active_id"),
+            "conversations": store.get("conversations", []),
+            "updated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        },
+        timeout=20,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Không lưu được lịch sử chat lên Supabase (HTTP {response.status_code}).")
+
+def load_chat_store(username: str) -> dict:
+    """Ưu tiên Supabase; nếu bảng chưa sẵn sàng thì dùng bản JSON dự phòng."""
+    try:
+        remote_store = supabase_load_chat_store(username)
+        if remote_store is not None:
+            st.session_state.chat_storage_warning = ""
+            return remote_store
+
+        # Nếu Supabase chưa có bản ghi, nhập lịch sử cục bộ cũ lên lần đầu.
+        local_store = normalize_chat_store(load_json_data(chat_path_for_user(username), []))
+        supabase_save_chat_store(username, local_store)
+        st.session_state.chat_storage_warning = ""
+        return local_store
+    except Exception as exc:
+        st.session_state.chat_storage_warning = (
+            "Chưa lưu được lịch sử lâu dài trên Supabase. "
+            "Ứng dụng tạm dùng tệp cục bộ; hãy tạo bảng chat_history theo hướng dẫn. "
+            f"Chi tiết: {exc}"
+        )
+        return normalize_chat_store(load_json_data(chat_path_for_user(username), []))
+
 def save_chat_history():
-    """Đồng bộ tin nhắn hiện tại vào cuộc hội thoại đang mở rồi lưu."""
+    """Đồng bộ tin nhắn hiện tại vào hội thoại đang mở và lưu lâu dài."""
     username = st.session_state.get("username", "")
     if not username:
         return
@@ -107,10 +167,20 @@ def save_chat_history():
                     conv["title"] = first_question[:45] + ("…" if len(first_question) > 45 else "")
             conv["updated_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
             break
-    save_json_data(chat_path_for_user(username), {
+    store = {
         "active_id": active_id,
         "conversations": conversations,
-    })
+    }
+    # Luôn lưu bản dự phòng trước; sau đó đồng bộ Supabase.
+    save_json_data(chat_path_for_user(username), store)
+    try:
+        supabase_save_chat_store(username, store)
+        st.session_state.chat_storage_warning = ""
+    except Exception as exc:
+        st.session_state.chat_storage_warning = (
+            "Lịch sử đang được lưu tạm trên máy chủ ứng dụng, chưa đồng bộ được Supabase. "
+            f"Chi tiết: {exc}"
+        )
 
 def start_new_conversation():
     """Tạo một hội thoại trống và chuyển sang hội thoại đó."""
@@ -698,6 +768,8 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 💬 Hội thoại")
+    if st.session_state.get("chat_storage_warning"):
+        st.warning(st.session_state.chat_storage_warning)
     if st.button("＋ Chat mới", key="start_new_chat", use_container_width=True):
         start_new_conversation()
         st.rerun()
