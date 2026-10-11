@@ -423,6 +423,16 @@ if "api_key" in saved_config:
 if "gsheet_url" not in st.session_state:
     st.session_state.gsheet_url = saved_config.get("gsheet_url", "")
 
+if "gsheet_urls_input" not in st.session_state:
+    saved_sheet_urls = saved_config.get("gsheet_urls", [])
+    if isinstance(saved_sheet_urls, str):
+        saved_sheet_urls = [line.strip() for line in saved_sheet_urls.splitlines() if line.strip()]
+    if not saved_sheet_urls and st.session_state.gsheet_url:
+        saved_sheet_urls = [st.session_state.gsheet_url]
+    st.session_state.gsheet_urls_input = "\\n".join(
+        url.strip() for url in saved_sheet_urls if isinstance(url, str) and url.strip()
+    )
+
 if "data_source" not in st.session_state:
     st.session_state.data_source = saved_config.get(
         "data_source", "🌐 Link Google Trang tính"
@@ -505,6 +515,28 @@ def load_all_sheets_from_gsheet(url: str) -> dict:
         raise Exception("Lỗi tải trang tính")
     xl = pd.ExcelFile(io.BytesIO(resp.content))
     return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
+
+def load_all_sheets_from_multiple_gsheets(urls: list) -> tuple:
+    """Gộp sheet từ nhiều link Google Sheets; báo lỗi riêng từng link."""
+    combined = {}
+    errors = []
+    for index, url in enumerate(urls, start=1):
+        sheet_id = extract_gsheet_id(url)
+        if not sheet_id:
+            errors.append(f"Link {index}: URL không đúng định dạng Google Sheets.")
+            continue
+        source_label = f"Google Sheet {index} ({sheet_id[:8]})"
+        try:
+            sheets = load_all_sheets_from_gsheet(url)
+            for sheet_name, frame in sheets.items():
+                key = f"{source_label} · {sheet_name}"
+                if key in combined:
+                    key = f"{source_label} · {sheet_name} ({index})"
+                combined[key] = frame
+        except Exception as exc:
+            errors.append(f"Link {index} ({sheet_id[:8]}): {exc}")
+    return combined, errors
+
 
 @st.cache_data(show_spinner=False)
 def load_all_sheets_from_file(path: str) -> dict:
@@ -791,18 +823,35 @@ with st.sidebar:
 
     sheets_data = None
     if data_source == "🌐 Link Google Trang tính":
-        gsheet_url_input = st.text_input("Dán link Google Sheet:", value=st.session_state.gsheet_url)
-        if gsheet_url_input != st.session_state.gsheet_url:
-            st.session_state.gsheet_url = gsheet_url_input
-            saved_config["gsheet_url"] = gsheet_url_input
-            save_json_data(CONFIG_PATH, saved_config)
+        gsheet_urls_input = st.text_area(
+            "Link Google Trang tính (mỗi link một dòng)",
+            key="gsheet_urls_input",
+            height=120,
+            placeholder="https://docs.google.com/spreadsheets/d/…/edit\nhttps://docs.google.com/spreadsheets/d/…/edit",
+            help="Dán một hoặc nhiều link Google Sheets, mỗi link trên một dòng. Mỗi bảng tính phải được chia sẻ quyền xem cho ứng dụng.",
+        )
+        gsheet_urls = list(dict.fromkeys(
+            line.strip()
+            for line in gsheet_urls_input.splitlines()
+            if line.strip()
+        ))
 
-        if st.session_state.gsheet_url:
-            try:
-                sheets_data = load_all_sheets_from_gsheet(st.session_state.gsheet_url)
-                st.success(f"✅ Kết nối thành công {len(sheets_data)} tab!")
-            except Exception:
-                st.error("❌ Lỗi đọc Google Sheet!")
+        # Lưu danh sách link mới; duy trì gsheet_url cũ để tương thích với cấu hình phiên bản trước.
+        if saved_config.get("gsheet_urls") != gsheet_urls or saved_config.get("gsheet_url", "") != (gsheet_urls[0] if gsheet_urls else ""):
+            saved_config["gsheet_urls"] = gsheet_urls
+            saved_config["gsheet_url"] = gsheet_urls[0] if gsheet_urls else ""
+            save_json_data(CONFIG_PATH, saved_config)
+        st.session_state.gsheet_url = gsheet_urls[0] if gsheet_urls else ""
+
+        if gsheet_urls:
+            with st.spinner(f"Đang đọc {len(gsheet_urls)} link Google Sheets..."):
+                sheets_data, gsheet_errors = load_all_sheets_from_multiple_gsheets(gsheet_urls)
+            if sheets_data:
+                st.success(f"✅ Đã đọc {len(gsheet_urls) - len(gsheet_errors)}/{len(gsheet_urls)} link và tải {len(sheets_data)} tab dữ liệu.")
+            if gsheet_errors:
+                st.warning("Một số link chưa đọc được:\n\n" + "\n".join(f"- {message}" for message in gsheet_errors))
+            if not sheets_data and not gsheet_errors:
+                st.warning("Các Google Sheets đã kết nối nhưng không có tab dữ liệu để hiển thị.")
     else:
         uploaded_files = st.file_uploader(
             "Tải một hoặc nhiều file Excel",
