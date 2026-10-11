@@ -874,7 +874,13 @@ def render_warehouse_dashboard(sheets_dict):
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Mặt hàng / dòng dữ liệu", f"{len(df):,}")
     if stock_col is not None and not valid_stock.empty:
-        m2.metric("Tổng tồn (cộng số liệu)", f"{valid_stock.sum():,.2f}".rstrip("0").rstrip("."))
+        units = df[unit_col].dropna().astype(str).str.strip().unique().tolist() if unit_col is not None else []
+        if unit_col is not None and len(units) == 1:
+            m2.metric(f"Tổng tồn ({units[0]})", f"{valid_stock.sum():,.2f}".rstrip("0").rstrip("."))
+        elif unit_col is not None and len(units) > 1:
+            m2.metric("Tổng tồn", "Nhiều đơn vị")
+        else:
+            m2.metric("Tổng tồn", "Chưa rõ đơn vị")
         m3.metric("Tồn bằng 0", f"{int((valid_stock == 0).sum()):,}")
         m4.metric("Tồn âm", f"{int((valid_stock < 0).sum()):,}")
     else:
