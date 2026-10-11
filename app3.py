@@ -821,6 +821,149 @@ with st.sidebar:
     else:
         st.caption("Chưa có cuộc trò chuyện nào.")
 
+
+def _find_column(df, groups):
+    """Tìm cột theo tên thực tế; chỉ dùng khi tên cột khớp các từ khóa rõ ràng."""
+    for group in groups:
+        for col in df.columns:
+            normalized = str(col).strip().lower()
+            if all(term in normalized for term in group):
+                return col
+    return None
+
+
+def render_warehouse_dashboard(sheets_dict):
+    """Dashboard linh hoạt: chỉ tính chỉ số khi tìm thấy cột phù hợp trong dữ liệu."""
+    st.subheader("📦 Tổng quan kho")
+    st.caption("Các chỉ số và bộ lọc được bật theo những cột thực tế tìm thấy trong dữ liệu.")
+
+    # Ưu tiên sheet có cột tồn kho; nếu không có, dùng sheet đầu tiên và nêu rõ giới hạn.
+    candidates = []
+    for sheet_name, frame in sheets_dict.items():
+        if frame is None or frame.empty:
+            continue
+        stock_col = _find_column(frame, [["tồn", "kho"], ["tồn"], ["ton", "kho"], ["ton"], ["số lượng tồn"], ["sl tồn"]])
+        candidates.append((sheet_name, frame, stock_col))
+    stock_candidates = [x for x in candidates if x[2] is not None]
+    if stock_candidates:
+        selected_name, source_df, stock_col = stock_candidates[0]
+        st.caption(f"Sheet dùng cho thống kê tồn kho: **{selected_name}** · Cột tồn: **{stock_col}**")
+    elif candidates:
+        selected_name, source_df, stock_col = candidates[0]
+        st.info("Chưa nhận diện được cột tồn kho theo tên cột. Dashboard sẽ chỉ hiển thị số dòng và bộ lọc văn bản; không tự suy diễn số liệu tồn.")
+    else:
+        st.warning("Không có sheet nào chứa dữ liệu để hiển thị.")
+        return
+
+    df = source_df.dropna(how="all").copy()
+    category_col = _find_column(df, [["loại hàng"], ["nhóm hàng"], ["danh mục"], ["category"], ["loại sản phẩm"]])
+    name_col = _find_column(df, [["tên hàng"], ["tên sản phẩm"], ["tên vật tư"], ["tên"], ["mặt hàng"], ["name"]])
+    code_col = _find_column(df, [["mã hàng"], ["mã sản phẩm"], ["mã vật tư"], ["mã"], ["code"]])
+    unit_col = _find_column(df, [["đơn vị"], ["unit"]])
+
+    stock_values = None
+    if stock_col is not None:
+        stock_values = pd.to_numeric(
+            df[stock_col].astype(str).str.replace(",", "", regex=False).str.replace(" ", "", regex=False),
+            errors="coerce"
+        )
+        valid_stock = stock_values.dropna()
+    else:
+        valid_stock = pd.Series(dtype=float)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Mặt hàng / dòng dữ liệu", f"{len(df):,}")
+    if stock_col is not None and not valid_stock.empty:
+        m2.metric("Tổng tồn (cộng số liệu)", f"{valid_stock.sum():,.2f}".rstrip("0").rstrip("."))
+        m3.metric("Tồn bằng 0", f"{int((valid_stock == 0).sum()):,}")
+        m4.metric("Tồn âm", f"{int((valid_stock < 0).sum()):,}")
+    else:
+        m2.metric("Tổng tồn", "Chưa xác định")
+        m3.metric("Tồn bằng 0", "Chưa xác định")
+        m4.metric("Tồn âm", "Chưa xác định")
+
+    st.divider()
+    st.subheader("🔎 Tra cứu hàng hóa")
+    f1, f2, f3 = st.columns([1, 1, 2])
+    with f1:
+        category_value = "Tất cả"
+        if category_col is not None:
+            category_options = ["Tất cả"] + sorted(df[category_col].dropna().astype(str).unique().tolist())
+            category_value = st.selectbox("Loại hàng / danh mục", category_options, key="warehouse_category_filter")
+        else:
+            st.caption("Không tìm thấy cột loại hàng/danh mục.")
+    with f2:
+        stock_filter = st.selectbox(
+            "Tình trạng tồn",
+            ["Tất cả", "Tồn thấp", "Hết hàng (0)", "Tồn âm", "Tồn dương"],
+            key="warehouse_stock_filter",
+            disabled=stock_col is None,
+        )
+        low_threshold = st.number_input(
+            "Ngưỡng tồn thấp",
+            min_value=0.0,
+            value=10.0,
+            step=1.0,
+            key="warehouse_low_stock_threshold",
+            disabled=stock_col is None or stock_filter != "Tồn thấp",
+            help="Ngưỡng do bạn nhập cho lần tra cứu này; đơn vị theo dữ liệu nguồn."
+        )
+    with f3:
+        search_text = st.text_input("Tìm theo mã hoặc tên hàng", key="warehouse_item_search", placeholder="Nhập mã hoặc tên để tìm")
+
+    filtered = df.copy()
+    if category_col is not None and category_value != "Tất cả":
+        filtered = filtered[filtered[category_col].astype(str) == category_value]
+    if search_text.strip():
+        searchable_cols = [c for c in [code_col, name_col] if c is not None]
+        if not searchable_cols:
+            searchable_cols = list(filtered.columns)
+        mask = pd.Series(False, index=filtered.index)
+        for col in searchable_cols:
+            mask = mask | filtered[col].astype(str).str.contains(search_text.strip(), case=False, na=False, regex=False)
+        filtered = filtered[mask]
+
+    if stock_col is not None:
+        filtered_stock = pd.to_numeric(
+            filtered[stock_col].astype(str).str.replace(",", "", regex=False).str.replace(" ", "", regex=False),
+            errors="coerce"
+        )
+        if stock_filter == "Tồn thấp":
+            filtered = filtered[(filtered_stock > 0) & (filtered_stock <= low_threshold)]
+        elif stock_filter == "Hết hàng (0)":
+            filtered = filtered[filtered_stock == 0]
+        elif stock_filter == "Tồn âm":
+            filtered = filtered[filtered_stock < 0]
+        elif stock_filter == "Tồn dương":
+            filtered = filtered[filtered_stock > 0]
+
+    st.caption(f"Kết quả: **{len(filtered):,}** dòng")
+    display_cols = [c for c in [code_col, name_col, category_col, stock_col, unit_col] if c is not None]
+    if not display_cols:
+        display_cols = list(filtered.columns[:8])
+    st.dataframe(filtered[display_cols] if display_cols else filtered, use_container_width=True, hide_index=True, height=320)
+
+    st.divider()
+    with st.expander("📊 Biểu đồ và dữ liệu chi tiết", expanded=False):
+        if stock_col is not None and not valid_stock.empty:
+            chart_df = df.copy()
+            chart_df["_Giá trị tồn để vẽ"] = stock_values
+            if name_col is not None:
+                chart_df["_Tên hiển thị"] = chart_df[name_col].astype(str)
+            else:
+                chart_df["_Tên hiển thị"] = chart_df.index.astype(str)
+            chart_df = chart_df.dropna(subset=["_Giá trị tồn để vẽ"]).sort_values("_Giá trị tồn để vẽ", ascending=False).head(15)
+            if not chart_df.empty:
+                st.markdown("**Top 15 dòng có số tồn cao nhất**")
+                st.bar_chart(chart_df.set_index("_Tên hiển thị")["_Giá trị tồn để vẽ"])
+        else:
+            st.caption("Chưa có cột tồn kho phù hợp để vẽ biểu đồ tồn.")
+        st.markdown("**Mở bảng dữ liệu gốc theo sheet**")
+        selected_tab = st.selectbox("Chọn sheet dữ liệu", list(sheets_dict.keys()), key="detail_sheet_selector")
+        detail_df = sheets_dict[selected_tab]
+        st.dataframe(detail_df, use_container_width=True, height=400)
+
+
 # ── GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH ─────────────────────────────────────────
 st.markdown("# 🏭 AI Quản Lý Kho Hàng")
 
@@ -831,8 +974,7 @@ if not sheets_data:
 tab_data, tab_chat = st.tabs(["📊 Xem dữ liệu", "💬 Hỏi đáp Thông Minh"])
 
 with tab_data:
-    selected_tab = st.selectbox("Chọn Tab:", list(sheets_data.keys()))
-    st.dataframe(sheets_data[selected_tab], use_container_width=True, height=400)
+    render_warehouse_dashboard(sheets_data)
 
 with tab_chat:
     for msg in st.session_state.messages:
