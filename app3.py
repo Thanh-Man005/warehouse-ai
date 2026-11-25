@@ -609,11 +609,20 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             "Streamlit Cloud → Settings → Secrets."
         )
     
+    # Tự động gửi ĐỦ 100% dòng cho các bảng danh mục/tổng hợp (<= 300 dòng)
+    # Chỉ giới hạn các bảng giao dịch quá lớn (> 300 dòng) để tránh quá tải ngữ cảnh
     prompt_data = []
     for name, df in sheets_dict.items():
         df_clean = df.dropna(how="all")
         if not df_clean.empty:
-            prompt_data.append("=== TAB [" + str(name) + "] ===\n" + df_clean.head(50).to_string(index=False))
+            total_rows = len(df_clean)
+            if total_rows <= 300:
+                df_send = df_clean
+                note = f"Đầy đủ {total_rows} dòng"
+            else:
+                df_send = df_clean.head(100)
+                note = f"Hiển thị 100/{total_rows} dòng đầu"
+            prompt_data.append(f"=== TAB [{name}] ({note}) ===\n" + df_send.to_string(index=False))
             
     context = "\n\n".join(prompt_data)
 
@@ -627,29 +636,36 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     history_context = "\n".join(history_lines)
 
     system_text = (
-        "Bạn là chuyên gia phân tích kho hàng. Dữ liệu kho hàng bên dưới chỉ là dữ liệu hiện tại; "
+        "Bạn là chuyên gia phân tích dữ liệu kho hàng. Dữ liệu bên dưới chỉ là dữ liệu hiện tại; "
         "lịch sử hội thoại được cung cấp để hiểu câu hỏi nối tiếp.\n\n"
         + context + "\n\n"
         "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Chưa có lịch sử)") + "\n\n"
-        "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\\n"
-        "0. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm trong câu trả lời trước liên quan; không mở rộng sang toàn bộ kho. Nếu thiếu dữ liệu, nói rõ, không đoán.\\n"
-        "1. Ưu tiên câu trả lời NGẮN GỌN, trực tiếp: nêu kết quả chính ngay đầu; thường chỉ 1-3 câu, chỉ thêm bảng khi giúp đọc số liệu dễ hơn.\\n"
-        "2. Với câu hỏi so sánh/xếp hạng, chỉ đưa tên/mã, số lượng và đơn vị cần thiết; nêu kết luận một lần. Không nhắc lại yêu cầu, không mô tả quy trình tra cứu, không lặp lại cùng số liệu ở nhiều đoạn, không thêm lời dẫn hoặc kết luận dài dòng.\\n"
-        "3. Vẫn phải đủ thông tin để kiểm chứng: giữ nguyên tên/mã sản phẩm, số liệu và đơn vị; nếu so sánh nhiều sản phẩm thì dùng bảng gọn. Không bỏ các dữ kiện quan trọng chỉ để rút ngắn.\\n"
-        "4. Nếu người dùng yêu cầu phân tích chi tiết, giải thích hoặc báo cáo đầy đủ thì mới trả lời dài hơn theo yêu cầu.\\n"
-        "5. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
+        "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
+        "0. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm trong câu trả lời trước liên quan; không mở rộng sang toàn bộ kho. Nếu thiếu dữ liệu, nói rõ, không đoán.\n"
+        "1. QUY TẮC TRA CỨU SỐ LIỆU: Tự động xác định đúng bảng tổng hợp/tồn kho/danh mục phù hợp nhất trong dữ liệu được cung cấp (ví dụ các tab tồn kho theo mã hàng, danh mục sản phẩm...). Đọc đúng tên cột thực tế của file, đối chiếu chính xác từng hàng theo đúng mã/tên sản phẩm, tuyệt đối không lấy nhầm số liệu của dòng khác hoặc tự suy diễn.\n"
+        "2. Ưu tiên câu trả lời NGẮN GỌN, trực tiếp: nêu kết quả chính ngay đầu; thường chỉ 1-3 câu, chỉ thêm bảng khi giúp đọc số liệu dễ hơn.\n"
+        "3. Với câu hỏi so sánh/xếp hạng, chỉ đưa tên/mã, số lượng và đơn vị cần thiết; nêu kết luận một lần. Không nhắc lại yêu cầu, không mô tả quy trình tra cứu, không lặp lại cùng số liệu ở nhiều đoạn, không thêm lời dẫn hoặc kết luận dài dòng.\n"
+        "4. Vẫn phải đủ thông tin để kiểm chứng: giữ nguyên tên/mã sản phẩm, số liệu và đơn vị; nếu so sánh nhiều sản phẩm thì dùng bảng gọn. Không bỏ các dữ kiện quan trọng chỉ để rút ngắn.\n"
+        "5. Nếu người dùng yêu cầu phân tích chi tiết, giải thích hoặc báo cáo đầy đủ thì mới trả lời dài hơn theo yêu cầu.\n"
+        "6. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
     )
 
     body = {
         "contents": [{"role": "user", "parts": [{"text": system_text + "\n\nCÂU HỎI CỦA NGƯỜI DÙNG: " + question}]}],
         "generationConfig": {
             "maxOutputTokens": 8192,
-            "temperature": 0.2
+            "temperature": 0.0
         }
     }
 
-    # TỰ ĐỘNG CẬP NHẬT danh sách model
-    candidate_models = []
+    # Ưu tiên các model Flash/Pro tiêu chuẩn (tránh dùng bản lite dễ lệch cột khi đọc bảng lớn)
+    preferred_models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
+    ]
+    discovered_models = []
     try:
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
         l_resp = requests.get(list_url, timeout=10)
@@ -658,19 +674,18 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             for m in m_list:
                 m_name = m.get("name", "").replace("models/", "")
                 methods = m.get("supportedGenerationMethods", [])
-                if "generateContent" in methods and m_name.startswith("gemini-"):
-                    candidate_models.append(m_name)
+                if "generateContent" in methods and m_name.startswith("gemini-") and "lite" not in m_name.lower():
+                    discovered_models.append(m_name)
     except Exception:
         pass
 
-    if not candidate_models:
-        candidate_models = ["gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest"]
+    candidate_models = list(dict.fromkeys(preferred_models + discovered_models))
 
     last_error = ""
     for model_name in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
         try:
-            resp = requests.post(url, params={"key": api_key}, json=body, timeout=30)
+            resp = requests.post(url, params={"key": api_key}, json=body, timeout=60)
             if resp.status_code == 200:
                 res_json = resp.json()
                 candidates = res_json.get("candidates", [])
