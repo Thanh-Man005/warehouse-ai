@@ -512,6 +512,33 @@ def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else None
 
+def smart_parse_sheet(xl: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
+    """Tự động tìm dòng tiêu đề thật sự (bỏ qua các dòng mô tả ở đầu sheet) và làm sạch bảng."""
+    raw = xl.parse(sheet_name, header=None)
+    if raw.empty:
+        return pd.DataFrame()
+
+    best_row = 0
+    best_score = -1
+    max_scan = min(15, len(raw))
+
+    for i in range(max_scan):
+        row = raw.iloc[i]
+        non_null = row.dropna()
+        if len(non_null) < 2:
+            continue
+        str_count = sum(1 for v in non_null if isinstance(v, str) and v.strip() != "")
+        score = str_count * 2 + len(non_null)
+        if score > best_score:
+            best_score = score
+            best_row = i
+
+    df = xl.parse(sheet_name, header=best_row)
+    df = df.dropna(how="all")
+    df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")]
+    return df.reset_index(drop=True)
+
+
 @st.cache_data(show_spinner=False, ttl=60)
 def load_all_sheets_from_gsheet(url: str) -> dict:
     sheet_id = extract_gsheet_id(url)
@@ -522,7 +549,8 @@ def load_all_sheets_from_gsheet(url: str) -> dict:
     if resp.status_code != 200:
         raise Exception("Lỗi tải trang tính")
     xl = pd.ExcelFile(io.BytesIO(resp.content))
-    return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
+    return {sheet: smart_parse_sheet(xl, sheet) for sheet in xl.sheet_names}
+
 
 def load_all_sheets_from_multiple_gsheets(urls: list) -> tuple:
     """Gộp sheet từ nhiều link Google Sheets; báo lỗi riêng từng link."""
@@ -549,7 +577,7 @@ def load_all_sheets_from_multiple_gsheets(urls: list) -> tuple:
 @st.cache_data(show_spinner=False)
 def load_all_sheets_from_file(path: str) -> dict:
     xl = pd.ExcelFile(path)
-    return {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
+    return {sheet: smart_parse_sheet(xl, sheet) for sheet in xl.sheet_names}
 
 
 def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
@@ -564,7 +592,7 @@ def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
                 key = f"{filename} · {sheet_name}"
                 if key in combined:
                     key = f"{filename} ({file_index}) · {sheet_name}"
-                combined[key] = workbook.parse(sheet_name)
+                combined[key] = smart_parse_sheet(workbook, sheet_name)
         except Exception as exc:
             errors.append(f"{filename}: {exc}")
     if not combined:
@@ -932,7 +960,7 @@ def _find_stock_column(df):
     prioritized = [
         ["tồn cuối kỳ"], ["tồn cuối kì"], ["số lượng tồn cuối kỳ"],
         ["số lượng tồn hiện tại"], ["tồn kho hiện tại"], ["tồn hiện tại"],
-        ["số lượng tồn"], ["tồn kho"], ["stock"],
+        ["số lượng tồn"], ["tồn kho"], ["stock"], ["sellable"], ["co_the_ban"],
     ]
     for group in prioritized:
         col = _find_column(df, [group])
@@ -1027,42 +1055,43 @@ def render_warehouse_dashboard(sheets_dict):
         return
 
     stock_candidates = [item for item in candidates if item[2] is not None]
-    if stock_candidates:
-        preferred = next((item for item in stock_candidates if item[3] is not None), stock_candidates[0])
-        source_names = [item[0] for item in stock_candidates]
-        if len(source_names) > 1:
-            selected_name = st.selectbox(
-                "Nguồn dữ liệu tồn kho",
-                source_names,
-                index=source_names.index(preferred[0]),
-                key="warehouse_dashboard_source_sheet",
-            )
-            selected = next(item for item in stock_candidates if item[0] == selected_name)
-        else:
-            selected = stock_candidates[0]
-        selected_name, df, stock_col, min_stock_col = selected
+    preferred = (
+        next((item for item in stock_candidates if item[3] is not None), stock_candidates[0])
+        if stock_candidates else candidates[0]
+    )
+    source_names = [item[0] for item in candidates]
+    if len(source_names) > 1:
+        selected_name = st.selectbox(
+            "Nguồn dữ liệu hiển thị (chọn sheet tồn kho hoặc sheet nhập/xuất)",
+            source_names,
+            index=source_names.index(preferred[0]),
+            key="warehouse_dashboard_source_sheet",
+        )
+        selected = next(item for item in candidates if item[0] == selected_name)
     else:
-        selected_name, df, stock_col, min_stock_col = candidates[0]
-        st.info("Chưa nhận diện được cột tồn hiện tại. Các số liệu tồn kho sẽ không được tự suy ra từ cột nhập hoặc xuất.")
+        selected = candidates[0]
+    selected_name, df, stock_col, min_stock_col = selected
+    if stock_col is None:
+        st.info("Sheet đang chọn không có cột tồn kho hiện tại; Dashboard sẽ ưu tiên hiển thị số liệu nhập/xuất nếu có.")
 
     category_col = _find_column(df, [
-        ["loại hàng"], ["nhóm hàng"], ["danh mục"], ["category"], ["loại sản phẩm"],
+        ["loại hàng"], ["nhóm hàng"], ["nhom_hang"], ["nhom"], ["danh mục"], ["category"], ["loại sản phẩm"],
     ])
     name_col = _find_column(df, [
-        ["tên hàng"], ["tên sản phẩm"], ["tên vật tư"], ["mặt hàng"], ["name"], ["tên"],
+        ["tên hàng"], ["tên sản phẩm"], ["ten_san_pham"], ["tên vật tư"], ["mặt hàng"], ["name"], ["tên"],
     ])
     code_col = _find_column(df, [
-        ["mã hàng"], ["mã sản phẩm"], ["mã vật tư"], ["mã sp"], ["code"], ["mã"],
+        ["mã hàng"], ["mã sản phẩm"], ["ma_sku"], ["ma_lo"], ["mã vật tư"], ["mã sp"], ["code"], ["mã"],
     ])
-    unit_col = _find_column(df, [["đơn vị"], ["unit"]])
+    unit_col = _find_column(df, [["đơn vị"], ["don_vi"], ["unit"]])
 
     # Nhận diện các cột luân chuyển theo tên cột cụ thể; không lấy cột ngày/đơn giá làm số lượng.
     inbound_col = _find_column(df, [
-        ["số lượng nhập"], ["lượng nhập"], ["sl nhập"], ["tổng nhập"], ["nhập kho"],
+        ["số lượng nhập"], ["lượng nhập"], ["sl nhập"], ["sl_nhap"], ["nhap_thuc"], ["tổng nhập"], ["nhập kho"],
         ["inbound qty"], ["qty in"],
     ])
     outbound_col = _find_column(df, [
-        ["số lượng xuất"], ["lượng xuất"], ["sl xuất"], ["tổng xuất"], ["xuất kho"],
+        ["số lượng xuất"], ["lượng xuất"], ["sl xuất"], ["sl_xuat"], ["xuat_thuc"], ["tổng xuất"], ["xuất kho"],
         ["outbound qty"], ["qty out"],
     ])
     transfer_col = _find_column(df, [
