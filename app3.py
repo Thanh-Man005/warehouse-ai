@@ -437,7 +437,7 @@ if "gsheet_urls_input" not in st.session_state:
         saved_sheet_urls = [line.strip() for line in saved_sheet_urls.splitlines() if line.strip()]
     if not saved_sheet_urls and st.session_state.gsheet_url:
         saved_sheet_urls = [st.session_state.gsheet_url]
-    st.session_state.gsheet_urls_input = "\\n".join(
+    st.session_state.gsheet_urls_input = "\n".join(
         url.strip() for url in saved_sheet_urls if isinstance(url, str) and url.strip()
     )
 
@@ -448,61 +448,8 @@ if "data_source" not in st.session_state:
 
 
 def auto_route_and_process(question: str, sheets_dict: dict):
-    q_low = question.lower().strip()
-
-    # Nhóm câu hỏi bắt buộc gửi cho AI phân tích sâu hoặc vẽ biểu đồ
-    if any(k in q_low for k in ["biểu đồ", "vẽ biểu đồ", "đồ thị", "vẽ đồ thị", "bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất"]):
-        return None, True 
-
-    # 1. Tra cứu tồn ít / sắp hết (0 Token)
-    if any(k in q_low for k in ["sắp hết", "tồn ít", "cảnh báo", "hết hàng", "thiếu hàng"]):
-        results = []
-        for name, df in sheets_dict.items():
-            stock_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["ton", "số lượng", "sl", "tồn kho"])), None)
-            name_col  = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã"])), None)
-            
-            if stock_col and name_col:
-                df_clean = df.dropna(subset=[stock_col]).copy()
-                df_clean[stock_col] = pd.to_numeric(df_clean[stock_col], errors='coerce')
-                low_df = df_clean[df_clean[stock_col] <= 20]
-                
-                if not low_df.empty:
-                    items = [f"- **{row[name_col]}**: còn `{row[stock_col]}`" for _, row in low_df.head(10).iterrows()]
-                    results.append(f"📌 **Tab [{name}] có {len(low_df)} mặt hàng tồn ít (<=20):**\n" + "\n".join(items))
-        if results:
-            return "⚡ **[Tự động xử lý - 0 Token]**\n\n" + "\n\n".join(results), False
-        return "⚡ **[Tự động xử lý - 0 Token]**: Tất cả mặt hàng đều an toàn (tồn kho > 20).", False
-
-    # 2. Tính tổng giá trị kho (0 Token)
-    elif any(k in q_low for k in ["tổng giá trị", "tổng tiền", "giá trị kho", "tổng vốn"]):
-        total_val = 0
-        details = []
-        for name, df in sheets_dict.items():
-            val_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["thành tiền", "giá trị", "tổng tiền"])), None)
-            if val_col:
-                s = pd.to_numeric(df[val_col], errors='coerce').sum()
-                if s > 0:
-                    total_val += s
-                    details.append(f"- Tab **{name}**: `{s:,.0f} VNĐ`")
-        if details:
-            msg = f"⚡ **[Tự động xử lý - 0 Token]**\n\n💰 **Tổng giá trị kho:** `{total_val:,.0f} VNĐ`\n\nChi tiết từng tab:\n" + "\n".join(details)
-            return msg, False
-
-    # 3. Tra cứu tồn kho tổng quát (0 Token)
-    elif any(k in q_low for k in ["còn chính xác bao nhiêu", "còn bao nhiêu", "số lượng còn", "số lượng trong kho"]):
-        found_rows = []
-        for name, df in sheets_dict.items():
-            stock_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["ton", "số lượng", "sl", "tồn kho"])), None)
-            name_col  = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã sp", "mã"])), None)
-            
-            if stock_col and name_col:
-                df_clean = df.dropna(subset=[stock_col, name_col]).copy()
-                for _, row in df_clean.head(15).iterrows():
-                    found_rows.append(f"- **{row[name_col]}** (Tab `{name}`): còn `{row[stock_col]}` đơn vị")
-        
-        if found_rows:
-            return "⚡ **[Tự động tra cứu kho - 0 Token]**\n\n" + "\n".join(found_rows), False
-
+    # Luôn chuyển qua AI để đọc đúng ngữ nghĩa mọi cấu trúc file Excel (có dấu/không dấu/nhiều sheet),
+    # tránh bộ lọc 0-token bắt nhầm cột hoặc trả lời sai khi tên cột khác mẫu cũ.
     return None, True
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -575,7 +522,7 @@ def load_all_sheets_from_multiple_gsheets(urls: list) -> tuple:
 
 
 @st.cache_data(show_spinner=False)
-def load_all_sheets_from_file(path: str) -> dict:
+def load_all_sheets_from_file(path: str, file_mtime: float = 0.0) -> dict:
     xl = pd.ExcelFile(path)
     return {sheet: smart_parse_sheet(xl, sheet) for sheet in xl.sheet_names}
 
@@ -609,8 +556,8 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             "Streamlit Cloud → Settings → Secrets."
         )
     
-    # Tự động gửi ĐỦ 100% dòng cho các bảng danh mục/tổng hợp (<= 300 dòng)
-    # Chỉ giới hạn các bảng giao dịch quá lớn (> 300 dòng) để tránh quá tải ngữ cảnh
+    # Xuất dữ liệu dạng CSV gọn sạch (tránh lệch cột do dấu cách và giảm ~40% token)
+    # Gửi ĐỦ 100% dòng cho mọi bảng danh mục/tổng hợp (<= 300 dòng), giới hạn bảng nhật ký quá lớn (> 300 dòng)
     prompt_data = []
     for name, df in sheets_dict.items():
         df_clean = df.dropna(how="all")
@@ -622,7 +569,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             else:
                 df_send = df_clean.head(100)
                 note = f"Hiển thị 100/{total_rows} dòng đầu"
-            prompt_data.append(f"=== TAB [{name}] ({note}) ===\n" + df_send.to_string(index=False))
+            prompt_data.append(f"=== TAB [{name}] ({note}, định dạng CSV) ===\n" + df_send.to_csv(index=False))
             
     context = "\n\n".join(prompt_data)
 
@@ -641,7 +588,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         + context + "\n\n"
         "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Chưa có lịch sử)") + "\n\n"
         "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
-        "0. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm trong câu trả lời trước liên quan; không mở rộng sang toàn bộ kho. Nếu thiếu dữ liệu, nói rõ, không đoán.\n"
+        "0. NGUỒN SỰ THẬT DUY NHẤT là dữ liệu bảng ở trên. Nếu lịch sử hội thoại cũ có số liệu khác với dữ liệu hiện tại, BỎ QUA số liệu cũ và chỉ dùng dữ liệu hiện tại. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm đã nhắc tới nếu chúng có trong dữ liệu hiện tại.\n"
         "1. QUY TẮC TRA CỨU SỐ LIỆU: Tự động xác định đúng bảng tổng hợp/tồn kho/danh mục phù hợp nhất trong dữ liệu được cung cấp (ví dụ các tab tồn kho theo mã hàng, danh mục sản phẩm...). Đọc đúng tên cột thực tế của file, đối chiếu chính xác từng hàng theo đúng mã/tên sản phẩm, tuyệt đối không lấy nhầm số liệu của dòng khác hoặc tự suy diễn.\n"
         "2. Ưu tiên câu trả lời NGẮN GỌN, trực tiếp: nêu kết quả chính ngay đầu; thường chỉ 1-3 câu, chỉ thêm bảng khi giúp đọc số liệu dễ hơn.\n"
         "3. Với câu hỏi so sánh/xếp hạng, chỉ đưa tên/mã, số lượng và đơn vị cần thiết; nêu kết luận một lần. Không nhắc lại yêu cầu, không mô tả quy trình tra cứu, không lặp lại cùng số liệu ở nhiều đoạn, không thêm lời dẫn hoặc kết luận dài dòng.\n"
@@ -917,13 +864,14 @@ with st.sidebar:
                 # Giữ tương thích với cơ chế một file Excel đã lưu trước đây.
                 if len(uploaded_files) == 1:
                     EXCEL_PATH.write_bytes(uploaded_files[0].getvalue())
+                    load_all_sheets_from_file.clear()
                 st.success(f"✅ Đã đọc {len(uploaded_files)} file Excel và {len(sheets_data)} sheet.")
                 if upload_errors:
                     st.warning("Một số file chưa đọc được: " + " | ".join(upload_errors))
             except Exception as exc:
                 st.error(f"❌ Không đọc được file Excel: {exc}")
         elif EXCEL_PATH.exists():
-            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH), EXCEL_PATH.stat().st_mtime)
             st.info(f"ℹ️ Đang sử dụng file Excel đã lưu sẵn ({len(sheets_data)} sheet). Tải file lên để thay dữ liệu đang dùng.")
 
     st.divider()
