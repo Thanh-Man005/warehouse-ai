@@ -4,6 +4,7 @@ import json
 import os
 import re
 import io
+import contextlib
 import requests
 import hashlib
 import plotly.express as px
@@ -459,6 +460,26 @@ def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else None
 
+def _convert_excel_serial_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Quy đổi các cột ngày/giờ đang lưu dưới dạng số serial Excel (vd: 46297.513889) sang YYYY-MM-DD HH:MM:SS."""
+    date_hints = (
+        "ngay", "luc", "han_", "hsd", "date", "time",
+        "khoi_dau", "du_lieu_den", "bat_dau", "ket_thuc", "hoan_tat"
+    )
+    df = df.copy()
+    for col in df.columns:
+        col_low = str(col).strip().lower()
+        if any(h in col_low for h in date_hints):
+            s = pd.to_numeric(df[col], errors="coerce")
+            mask = s.notna() & (s >= 40000) & (s <= 55000)
+            if mask.any():
+                dt = pd.to_datetime(s[mask], unit="D", origin="1899-12-30").dt.round("s")
+                formatted = dt.dt.strftime("%Y-%m-%d %H:%M:%S").str.replace(" 00:00:00", "", regex=False)
+                df[col] = df[col].astype(object)
+                df.loc[mask, col] = formatted
+    return df
+
+
 def smart_parse_sheet(xl: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     """Tự động tìm dòng tiêu đề thật sự (bỏ qua các dòng mô tả ở đầu sheet) và làm sạch bảng."""
     raw = xl.parse(sheet_name, header=None)
@@ -483,6 +504,7 @@ def smart_parse_sheet(xl: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     df = xl.parse(sheet_name, header=best_row)
     df = df.dropna(how="all")
     df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")]
+    df = _convert_excel_serial_dates(df)
     return df.reset_index(drop=True)
 
 
@@ -548,6 +570,33 @@ def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
     return combined, errors
 
 
+def _run_python_calc(code_str: str, sheets_dict: dict) -> str:
+    """Thực thi mã pandas tính toán số liệu kho trên sheets_dict một cách an toàn và trả về stdout."""
+    import datetime, math
+    safe_globals = {
+        "__builtins__": {
+            "len": len, "range": range, "enumerate": enumerate, "zip": zip,
+            "min": min, "max": max, "sum": sum, "abs": abs, "round": round,
+            "sorted": sorted, "list": list, "dict": dict, "set": set, "tuple": tuple,
+            "str": str, "int": int, "float": float, "bool": bool, "print": print,
+            "any": any, "all": all, "isinstance": isinstance,
+        },
+        "pd": pd,
+        "np": np,
+        "datetime": datetime,
+        "math": math,
+        "sheets_dict": {k: v.copy() for k, v in sheets_dict.items()},
+    }
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            exec(code_str, safe_globals, {})
+        out = buf.getvalue().strip()
+        return out if out else "(Code chạy xong nhưng không có lệnh print() xuất kết quả)"
+    except Exception as e:
+        return f"LỖI THỰC THI PYTHON: {type(e).__name__}: {e}"
+
+
 def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     api_key = get_gemini_api_key()
     if not api_key:
@@ -555,22 +604,21 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             "🔑 Chưa cấu hình GEMINI_API_KEY trong "
             "Streamlit Cloud → Settings → Secrets."
         )
-    
-    # Xuất dữ liệu dạng CSV gọn sạch (tránh lệch cột do dấu cách và giảm ~40% token)
-    # Gửi ĐỦ 100% dòng cho mọi bảng danh mục/tổng hợp (<= 300 dòng), giới hạn bảng nhật ký quá lớn (> 300 dòng)
+
+    # Gửi ĐẦY ĐỦ 100% dòng của tất cả các bảng (không cắt head(100) làm mất giao dịch cuối kỳ),
+    # loại trừ tab đáp án mẫu TEST_30 để AI luôn tính trực tiếp từ sổ cái và dữ liệu thật.
     prompt_data = []
     for name, df in sheets_dict.items():
+        if str(name).strip().upper() == "TEST_30":
+            continue
         df_clean = df.dropna(how="all")
         if not df_clean.empty:
             total_rows = len(df_clean)
-            if total_rows <= 300:
-                df_send = df_clean
-                note = f"Đầy đủ {total_rows} dòng"
-            else:
-                df_send = df_clean.head(100)
-                note = f"Hiển thị 100/{total_rows} dòng đầu"
-            prompt_data.append(f"=== TAB [{name}] ({note}, định dạng CSV) ===\n" + df_send.to_csv(index=False))
-            
+            prompt_data.append(
+                f"=== TAB [{name}] (Đầy đủ {total_rows} dòng, định dạng CSV) ===\n"
+                + df_clean.to_csv(index=False)
+            )
+
     context = "\n\n".join(prompt_data)
 
     # Đưa các lượt hội thoại gần nhất vào prompt để câu hỏi nối tiếp có ngữ cảnh.
@@ -583,29 +631,22 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     history_context = "\n".join(history_lines)
 
     system_text = (
-        "Bạn là chuyên gia phân tích dữ liệu kho hàng. Dữ liệu bên dưới chỉ là dữ liệu hiện tại; "
+        "Bạn là chuyên gia phân tích dữ liệu kho hàng. Dữ liệu bên dưới là toàn bộ dữ liệu hiện tại; "
         "lịch sử hội thoại được cung cấp để hiểu câu hỏi nối tiếp.\n\n"
         + context + "\n\n"
         "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Chưa có lịch sử)") + "\n\n"
         "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
-        "0. NGUỒN SỰ THẬT DUY NHẤT là dữ liệu bảng ở trên. Nếu lịch sử hội thoại cũ có số liệu khác với dữ liệu hiện tại, BỎ QUA số liệu cũ và chỉ dùng dữ liệu hiện tại. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm đã nhắc tới nếu chúng có trong dữ liệu hiện tại.\n"
-        "1. QUY TẮC TRA CỨU SỐ LIỆU: Tự động xác định đúng bảng tổng hợp/tồn kho/danh mục phù hợp nhất trong dữ liệu được cung cấp (ví dụ các tab tồn kho theo mã hàng, danh mục sản phẩm...). Đọc đúng tên cột thực tế của file, đối chiếu chính xác từng hàng theo đúng mã/tên sản phẩm, tuyệt đối không lấy nhầm số liệu của dòng khác hoặc tự suy diễn.\n"
-        "2. Ưu tiên câu trả lời NGẮN GỌN, trực tiếp: nêu kết quả chính ngay đầu; thường chỉ 1-3 câu, chỉ thêm bảng khi giúp đọc số liệu dễ hơn.\n"
-        "3. Với câu hỏi so sánh/xếp hạng, chỉ đưa tên/mã, số lượng và đơn vị cần thiết; nêu kết luận một lần. Không nhắc lại yêu cầu, không mô tả quy trình tra cứu, không lặp lại cùng số liệu ở nhiều đoạn, không thêm lời dẫn hoặc kết luận dài dòng.\n"
-        "4. Vẫn phải đủ thông tin để kiểm chứng: giữ nguyên tên/mã sản phẩm, số liệu và đơn vị; nếu so sánh nhiều sản phẩm thì dùng bảng gọn. Không bỏ các dữ kiện quan trọng chỉ để rút ngắn.\n"
-        "5. Nếu người dùng yêu cầu phân tích chi tiết, giải thích hoặc báo cáo đầy đủ thì mới trả lời dài hơn theo yêu cầu.\n"
-        "6. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
+        "0. NGUỒN SỰ THẬT DUY NHẤT là dữ liệu bảng ở trên. Nếu lịch sử hội thoại cũ có số liệu khác với dữ liệu hiện tại, BỎ QUA số liệu cũ và chỉ dùng dữ liệu hiện tại.\n"
+        "1. NGÀY THAM CHIẾU & QUY TẮC NGHIỆP VỤ: Kiểm tra tab [THIET_LAP] (Ngay_mo_phong, Gio_chot) và [QUY_TAC] (R01..R16) nếu có trong file để áp dụng đúng ngày chốt, giờ chốt và công thức tính.\n"
+        "2. BẮT BUỘC DÙNG PYTHON TÍNH TOÁN CHO MỌI PHÉP ĐẾM / LỌC / CỘNG TỔNG / TRA NGÀY: "
+        "Khi câu hỏi cần lọc theo ngày, đếm số lần nhập/xuất, cộng tồn kho, tính giá trị, COGS, vòng quay hoặc đối chiếu nhiều bảng, "
+        "hãy xuất DUY NHẤT một khối mã trong thẻ ```python_calc ... ``` truy cập `sheets_dict['TEN_TAB']` và `pd` để tính ra kết quả chính xác và `print()` toàn bộ chi tiết cần thiết (không viết lời giải thích kèm theo trong bước này). "
+        "Hệ thống sẽ chạy mã đó và trả kết quả thực tế lại cho bạn ở bước tiếp theo để bạn viết câu trả lời cuối cùng.\n"
+        "3. Ưu tiên câu trả lời cuối cùng NGẮN GỌN, trực tiếp: nêu kết quả chính ngay đầu; chỉ thêm bảng gọn khi giúp đối chiếu rõ ràng.\n"
+        "4. Giữ nguyên tên/mã sản phẩm, mã chứng từ, thời điểm, số liệu và đơn vị; tuyệt đối không tự đoán hoặc lấy nhầm cột (ví dụ không lấy giờ hoàn tất pick thay cho giờ xuất giao/biến động SHIP).\n"
+        "5. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`) trong khối ```python ... ```."
     )
 
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": system_text + "\n\nCÂU HỎI CỦA NGƯỜI DÙNG: " + question}]}],
-        "generationConfig": {
-            "maxOutputTokens": 8192,
-            "temperature": 0.0
-        }
-    }
-
-    # Ưu tiên các model Flash/Pro tiêu chuẩn (tránh dùng bản lite dễ lệch cột khi đọc bảng lớn)
     preferred_models = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
@@ -628,26 +669,63 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
 
     candidate_models = list(dict.fromkeys(preferred_models + discovered_models))
 
+    def _call_gemini(model_name: str, contents_payload: list) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        body = {
+            "contents": contents_payload,
+            "generationConfig": {
+                "maxOutputTokens": 8192,
+                "temperature": 0.0
+            }
+        }
+        resp = requests.post(url, params={"key": api_key}, json=body, timeout=90)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            candidates = res_json.get("candidates", [])
+            if candidates and "content" in candidates[0]:
+                parts = candidates[0]["content"].get("parts", [])
+                return "".join(p.get("text", "") for p in parts if "text" in p).strip()
+            return ""
+        res_err = resp.json().get("error", {})
+        err_msg = res_err.get("message", resp.text)
+        if "invalid authentication credentials" in err_msg.lower() or "api key not valid" in err_msg.lower():
+            raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng kiểm tra lại API Key.")
+        raise RuntimeError(err_msg)
+
     last_error = ""
     for model_name in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
         try:
-            resp = requests.post(url, params={"key": api_key}, json=body, timeout=60)
-            if resp.status_code == 200:
-                res_json = resp.json()
-                candidates = res_json.get("candidates", [])
-                if candidates and "content" in candidates[0]:
-                    parts = candidates[0]["content"].get("parts", [])
-                    text_parts = [p.get("text", "") for p in parts if "text" in p]
-                    full_text = "".join(text_parts).strip()
-                    if full_text:
-                        return f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n{full_text}"
+            contents = [{
+                "role": "user",
+                "parts": [{"text": system_text + "\n\nCÂU HỎI CỦA NGƯỜI DÙNG: " + question}]
+            }]
+            first_reply = _call_gemini(model_name, contents)
+            if not first_reply:
+                continue
+
+            calc_match = re.search(r"```python_calc\s*(.*?)\s*```", first_reply, re.DOTALL)
+            if calc_match:
+                calc_code = calc_match.group(1)
+                calc_output = _run_python_calc(calc_code, sheets_dict)
+                contents.append({"role": "model", "parts": [{"text": first_reply}]})
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "text": (
+                            "KẾT QUẢ THỰC THI PYTHON TỪ DỮ LIỆU THẬT:\n"
+                            f"{calc_output}\n\n"
+                            "Hãy dựa HOÀN TOÀN vào kết quả thực thi Python ở trên để trả lời câu hỏi của người dùng "
+                            "một cách ngắn gọn, chính xác, đầy đủ mã chứng từ/thời điểm/số lượng. "
+                            "KHÔNG xuất lại khối ```python_calc```."
+                        )
+                    }]
+                })
+                final_reply = _call_gemini(model_name, contents)
+                if final_reply:
+                    final_reply = re.sub(r"```python_calc.*?```", "", final_reply, flags=re.DOTALL).strip()
+                    return f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n{final_reply}"
             else:
-                res_err = resp.json().get("error", {})
-                err_msg = res_err.get("message", resp.text)
-                if "invalid authentication credentials" in err_msg.lower() or "api key not valid" in err_msg.lower():
-                    raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng kiểm tra lại API Key.")
-                last_error = f"[{model_name}]: {err_msg}"
+                return f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n{first_reply}"
         except Exception as e:
             if "API Key" in str(e):
                 raise e
@@ -655,9 +733,10 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
 
     raise Exception(f"Lỗi kết nối AI. Chi tiết: {last_error}")
 
+
 # HÀM HIỂN THỊ: ẨN HOÀN TOÀN CODE PYTHON VÀ CHỈ VẼ BIỂU ĐỒ
 def render_message_and_chart(content: str, sheets_dict: dict):
-    code_pattern = r"```(?:python|py)?\s*(.*?)\s*```"
+    code_pattern = r"```(?:python_calc|python|py)?\s*(.*?)\s*```"
     code_matches = re.findall(code_pattern, content, re.DOTALL)
     clean_text = re.sub(code_pattern, "", content, flags=re.DOTALL).strip()
     
