@@ -707,6 +707,143 @@ def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
     return combined, errors
 
 
+# Tab luôn được gửi (nhỏ, dùng cho hầu hết câu hỏi). Nếu file không có tab nào trong nhóm này
+# (vd file kho kiểu khác), hệ thống giữ cách cũ: gửi mọi tab.
+DEFAULT_CORE_TABS = {"dm_sku", "ton_sku", "ton_lo", "ton_vi_tri", "thiet_lap", "quy_tac", "dm_khu", "tong_quan"}
+# Gợi ý: từ khóa trong câu hỏi (không dấu) → các tab nên gửi thêm.
+DEFAULT_TAB_HINTS = [
+    (("xe ", "xe nhap", "eta", "ata", "cua nhap", "tai xe", "bien so"), ("lich_xe_nhap", "don_mua_po", "phieu_nhap")),
+    (("nhap", "nhan hang", " po", "mua hang", "nha cung cap", "ncc", "dat hang", "tre hang"), ("don_mua_po", "phieu_nhap", "lich_xe_nhap", "dm_doi_tac")),
+    (("putaway", "len ke", "cat hang"), ("putaway", "phieu_nhap")),
+    (("don ban", "don hang", "giu hang", "phan bo", "khach", "giao hang", "trang thai don"), ("don_ban", "dong_don_ban", "giu_hang", "trang_thai_don", "xuat_giao")),
+    (("pick", "lay hang", "nhat hang"), ("nhiem_vu_pick", "don_ban", "dong_don_ban")),
+    (("xuat", "ban giao", "cogs", "gia von", "doanh thu", "van chuyen"), ("xuat_giao", "don_ban", "dong_don_ban")),
+    (("qc", "loi ngoai quan", "hu hong", "cach ly", "hu hai"), ("kiem_tra_qc",)),
+    (("tra hang", "hang tra", "return"), ("hang_tra",)),
+    (("kiem ke", "chenh lech", "thuc dem"), ("kiem_ke",)),
+    (("dieu chuyen", "chuyen ke", "chuyen vi tri"), ("dieu_chuyen",)),
+    (("tieu huy", "cho huy", "huy hang"), ("tieu_huy",)),
+    (("serial", "imei", "truy xuat"), ("dm_serial",)),
+    (("nhan vien", "ca lam", "ca sang", "ca chieu", "nguoi "), ("dm_nhan_vien", "ca_lam")),
+    (("lo ", " lo", "han su dung", "het han", "hsd", "ton lau", "fefo"), ("dm_lo",)),
+    (("bien dong", "so cai", "lich su", "phat sinh", "ledger", "nhap xuat ton"), ("bien_dong",)),
+    (("8 ngay", "lich 8"), ("lich_8_ngay",)),
+]
+# Tab KHÔNG bao giờ gửi cho AI: TEST_30 chứa đáp án mẫu → AI sẽ chép đáp án thay vì tính từ dữ liệu.
+DEFAULT_EXCLUDE_TABS = {"test_30"}
+_STOP = {"khong", "bao", "nhieu", "cac", "nao", "hom", "nay", "the", "trong", "cua", "nhung", "mat", "hang",
+         "kho", "con", "cho", "tai", "hay", "voi", "gi", "co", "la", "va", "nhung", "duoc", "den", "tu"}
+
+
+TAB_CONFIG_PATH = DATA_DIR / "tab_config.json"
+AUTO_CORE_MAX_ROWS = 150
+AUTO_CORE_NAME_HINTS = ("tong", "ton", "dm", "danh muc", "summary", "bao cao", "snapshot")
+
+
+def _fold(text) -> str:
+    """Bỏ dấu + chữ thường, KHÔNG cắt khoảng trắng (từ khóa như 'xe ' cần giữ khoảng trắng)."""
+    t = unicodedata.normalize("NFD", str(text))
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+    return t.replace("đ", "d").replace("Đ", "D").lower()
+
+
+def _tabkey(name) -> str:
+    """Khóa so khớp tên tab: không dấu, chữ thường, khoảng trắng/gạch dưới coi như nhau."""
+    return re.sub(r"[\s_]+", "_", _fold(name).strip())
+
+
+def _sheet_base(key) -> str:
+    return _tabkey(str(key).split("·")[-1])
+
+
+def default_tab_config() -> dict:
+    return {
+        "core_tabs": sorted(t.upper() for t in DEFAULT_CORE_TABS),
+        "exclude_tabs": sorted(t.upper() for t in DEFAULT_EXCLUDE_TABS),
+        "tab_hints": [{"keywords": list(k), "tabs": list(t)} for k, t in DEFAULT_TAB_HINTS],
+    }
+
+
+def load_tab_config() -> dict:
+    """Đọc data/tab_config.json; thiếu khóa nào thì dùng mặc định."""
+    cfg = default_tab_config()
+    saved = load_json_data(TAB_CONFIG_PATH, {})
+    if isinstance(saved, dict):
+        for k in cfg:
+            if k in saved and isinstance(saved[k], list):
+                cfg[k] = saved[k]
+    return cfg
+
+
+def effective_core_keys(sheets_dict: dict, cfg: dict) -> set:
+    """Tab lõi thực tế: theo cấu hình nếu khớp ít nhất 1 tab; nếu không thì TỰ NHẬN DIỆN
+    (tab nhỏ <=150 dòng hoặc tên có 'tổng hợp/tồn/danh mục...')."""
+    excluded = {_tabkey(t) for t in cfg.get("exclude_tabs", [])}
+    wanted = {_tabkey(t) for t in cfg.get("core_tabs", [])}
+    core = {k for k in sheets_dict if _sheet_base(k) in wanted and _sheet_base(k) not in excluded}
+    if core:
+        return core
+    for k, df in sheets_dict.items():
+        if _sheet_base(k) in excluded:
+            continue
+        rows = len(df.dropna(how="all"))
+        name = _sheet_base(k).replace("_", " ")
+        if 0 < rows <= AUTO_CORE_MAX_ROWS or any(h in name for h in AUTO_CORE_NAME_HINTS):
+            core.add(k)
+    return core
+
+
+_STOP = {"khong", "bao", "nhieu", "cac", "nao", "hom", "nay", "the", "trong", "cua", "nhung", "mat", "hang",
+         "kho", "con", "cho", "tai", "hay", "voi", "gi", "co", "la", "va", "duoc", "den", "tu"}
+
+
+def select_tabs(question: str, sheets_dict: dict, extra=None):
+    """Chọn tab gửi cho AI. Lõi luôn gửi; khớp gợi ý/tên tab thì gửi thêm; không khớp gì thì
+    gửi thêm mọi tab vừa (<=300 dòng) — 'không chắc thì gửi nhiều hơn'. Cấu hình đọc từ tab_config.json."""
+    cfg = load_tab_config()
+    excluded = {_tabkey(t) for t in cfg.get("exclude_tabs", [])}
+    bases = {k: _sheet_base(k) for k in sheets_dict}
+    allowed = [k for k in sheets_dict if bases[k] not in excluded]
+    core = effective_core_keys(sheets_dict, cfg)
+    if not core:
+        return allowed, []
+    q = " " + _fold(question) + " "
+    chosen = set(core)
+    matched = set()
+    for h in cfg.get("tab_hints", []):
+        try:
+            kws = [_fold(x) for x in h.get("keywords", [])]
+            tabs = {_tabkey(x) for x in h.get("tabs", [])}
+        except Exception:
+            continue
+        if any(kw in q for kw in kws):
+            matched |= {k for k, b in bases.items() if b in tabs}
+    qtok = set(re.findall(r"[a-z0-9]{3,}", q)) - _STOP
+    for k, b in bases.items():
+        if k not in core and (set(re.findall(r"[a-z0-9]{3,}", b.replace("_", " "))) - _STOP) & qtok:
+            matched.add(k)
+    if matched:
+        chosen |= matched
+    else:
+        chosen |= {k for k, df in sheets_dict.items() if len(df.dropna(how="all")) <= 300}
+    chosen |= set(extra or [])
+    selected = [k for k in allowed if k in chosen]
+    omitted = [k for k in allowed if k not in chosen]
+    return selected, omitted
+
+
+def _log_ask(question, model, selected, omitted, retried):
+    """Ghi log mỗi lượt hỏi AI để xem lại khi AI trả lời sai (tab nào đã được gửi)."""
+    try:
+        import datetime
+        rec = {"time": datetime.datetime.now().isoformat(timespec="seconds"), "question": question, "model": model,
+               "sent_tabs": selected, "omitted_tabs": omitted, "retried_with_extra_tabs": retried}
+        with open(DATA_DIR / "ask_log.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 ENTITY_PATTERNS = {
     "Mã SKU": re.compile(r"\bSP\d{3}\b"),
     "Mã lô": re.compile(r"\bL\d{3}-\d{2}\b"),
@@ -761,7 +898,8 @@ def build_history_context(question: str, chat_history, last_entities) -> str:
     return "\n".join(lines)
 
 
-def ask_ai(question: str, sheets_dict: dict, chat_history=None, last_entities=None) -> str:
+def ask_ai(question: str, sheets_dict: dict, chat_history=None, last_entities=None,
+           extra_tabs=None, _retry=True) -> str:
     api_key = get_gemini_api_key()
     if not api_key:
         raise Exception(
@@ -772,7 +910,9 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None, last_entities=No
     # Tự động gửi ĐỦ 100% dòng cho các bảng danh mục/tổng hợp (<= 300 dòng)
     # Chỉ giới hạn các bảng giao dịch quá lớn (> 300 dòng) để tránh quá tải ngữ cảnh
     prompt_data = []
-    for name, df in sheets_dict.items():
+    selected, omitted = select_tabs(question, sheets_dict, extra_tabs)
+    for name in selected:
+        df = sheets_dict[name]
         df_clean = df.dropna(how="all")
         if not df_clean.empty:
             total_rows = len(df_clean)
@@ -789,7 +929,18 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None, last_entities=No
                     df_send[_c] = df_send[_c].dt.strftime("%d/%m/%Y %H:%M").str.replace(" 00:00", "", regex=False)
             prompt_data.append(f"=== TAB [{name}] ({note}) ===\n" + df_send.to_string(index=False))
             
+    if omitted:
+        catalog = "\n".join(
+            f"- [{n}]: {len(sheets_dict[n].dropna(how='all'))} dòng; cột: {', '.join(map(str, sheets_dict[n].columns))}"
+            for n in omitted
+        )
+        prompt_data.append("=== CÁC TAB KHÔNG GỬI (chỉ có mục lục: tên, số dòng, cột) ===\n" + catalog)
     context = "\n\n".join(prompt_data)
+    if omitted and _retry:
+        rule7 = ("\n7. Nếu để trả lời cần dữ liệu từ tab trong mục 'CÁC TAB KHÔNG GỬI', hãy trả lời DUY NHẤT "
+                 "một dòng: CẦN_TAB: TEN_TAB1, TEN_TAB2 (không viết gì thêm).")
+    else:
+        rule7 = "\n7. Không còn tab nào để yêu cầu thêm; nếu thiếu dữ liệu, nói rõ phần nào thiếu, không đoán."
 
     # Đưa các lượt hội thoại gần nhất vào prompt để câu hỏi nối tiếp có ngữ cảnh.
     history_context = build_history_context(question, chat_history, last_entities)
@@ -807,6 +958,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None, last_entities=No
         "4. Vẫn phải đủ thông tin để kiểm chứng: giữ nguyên tên/mã sản phẩm, số liệu và đơn vị; nếu so sánh nhiều sản phẩm thì dùng bảng gọn. Không bỏ các dữ kiện quan trọng chỉ để rút ngắn.\n"
         "5. Nếu người dùng yêu cầu phân tích chi tiết, giải thích hoặc báo cáo đầy đủ thì mới trả lời dài hơn theo yêu cầu.\n"
         "6. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`). Đặt mã trong khối ```python ... ```."
+        + rule7
     )
 
     body = {
@@ -858,9 +1010,20 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None, last_entities=No
                     parts = candidates[0]["content"].get("parts", [])
                     full_text = "".join(p.get("text", "") for p in parts if "text" in p).strip()
                     if full_text:
+                        need = re.match(r"\s*CẦN_TAB\s*:\s*(.+)", full_text)
+                        if need and _retry and omitted:
+                            wanted = {_tabkey(w) for w in re.split(r"[,;]", need.group(1)) if w.strip()}
+                            more = [k for k in omitted if _sheet_base(k) in wanted]
+                            if more:  # AI báo thiếu tab → gửi lại đúng 1 lần kèm tab đó
+                                _log_ask(question, model_name, selected, omitted, more)
+                                return ask_ai(question, sheets_dict, chat_history, last_entities,
+                                              extra_tabs=list(extra_tabs or []) + more, _retry=False)
+                        if need:
+                            full_text = "⚠️ AI báo thiếu dữ liệu (" + need.group(1).strip() + ") nên chưa thể trả lời chắc chắn."
+                        _log_ask(question, model_name, selected, omitted, list(extra_tabs or []))
                         if candidates[0].get("finishReason") == "MAX_TOKENS":
                             full_text += "\n\n⚠️ _Câu trả lời bị cắt do giới hạn độ dài. Hãy hỏi hẹp hơn (theo nhóm hàng / theo kho) để xem đủ._"
-                        return f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n{full_text}"
+                        return f"🤖 **[Phân tích bởi AI ({model_name}) · gửi {len(selected)}/{len(sheets_dict)} tab]**\n\n{full_text}"
                 last_error = f"[{model_name}]: phản hồi rỗng"
                 break
             try:
@@ -1152,6 +1315,49 @@ with st.sidebar:
         elif EXCEL_PATH.exists():
             sheets_data = load_all_sheets_from_file(str(EXCEL_PATH), os.path.getmtime(EXCEL_PATH))
             st.info(f"ℹ️ Đang sử dụng file Excel đã lưu sẵn ({len(sheets_data)} sheet). Tải file lên để thay dữ liệu đang dùng.")
+
+    if sheets_data:
+        with st.expander("🧩 Cấu hình tab gửi cho AI", expanded=False):
+            _cfg = load_tab_config()
+            _keys = list(sheets_data.keys())
+            _sig = hashlib.md5("|".join(_keys).encode("utf-8")).hexdigest()[:8]
+            _wanted_core = {_tabkey(t) for t in _cfg.get("core_tabs", [])}
+            _configured = any(_sheet_base(k) in _wanted_core for k in _keys)
+            if not _configured:
+                st.caption("Chưa có tab lõi nào khớp file này → đang TỰ NHẬN DIỆN (tab ≤150 dòng hoặc tên có \"tổng hợp / tồn / danh mục...\"). "
+                           "Chọn tab lõi bên dưới rồi bấm Lưu để cố định.")
+            _core_default = sorted(effective_core_keys(sheets_dict, _cfg), key=_keys.index)
+            _excl_wanted = {_tabkey(t) for t in _cfg.get("exclude_tabs", [])}
+            _excl_default = [k for k in _keys if _sheet_base(k) in _excl_wanted]
+            _core_sel = st.multiselect("Tab lõi (luôn gửi cho AI)", _keys, default=_core_default, key=f"tabcfg_core_{_sig}")
+            _excl_sel = st.multiselect("Tab KHÔNG gửi (vd tab chứa đáp án mẫu)", _keys, default=_excl_default, key=f"tabcfg_excl_{_sig}")
+            _hints_txt = st.text_area(
+                "Gợi ý từ khóa → tab (JSON)",
+                value=json.dumps(_cfg.get("tab_hints", []), ensure_ascii=False, indent=1),
+                height=160, key=f"tabcfg_hints_{_sig}",
+                help='Mỗi mục: {"keywords": ["xe nhập", "eta"], "tabs": ["LICH_XE_NHAP"]}. Câu hỏi chứa từ khóa thì gửi thêm các tab này.',
+            )
+            _c1, _c2 = st.columns(2)
+            if _c1.button("💾 Lưu cấu hình", use_container_width=True, key=f"tabcfg_save_{_sig}"):
+                try:
+                    _hints = json.loads(_hints_txt or "[]")
+                    assert isinstance(_hints, list) and all(isinstance(h, dict) for h in _hints)
+                    save_json_data(TAB_CONFIG_PATH, {
+                        "core_tabs": [k.split("·")[-1].strip() for k in _core_sel],
+                        "exclude_tabs": [k.split("·")[-1].strip() for k in _excl_sel],
+                        "tab_hints": _hints,
+                    })
+                    st.success("Đã lưu. Áp dụng từ câu hỏi tiếp theo.")
+                except Exception as _exc:
+                    st.error(f"JSON gợi ý không hợp lệ: {_exc}")
+            if _c2.button("↩️ Về mặc định", use_container_width=True, key=f"tabcfg_reset_{_sig}"):
+                try:
+                    TAB_CONFIG_PATH.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                for _k in (f"tabcfg_core_{_sig}", f"tabcfg_excl_{_sig}", f"tabcfg_hints_{_sig}"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
 
     st.divider()
     st.markdown("### 💬 Hội thoại")
