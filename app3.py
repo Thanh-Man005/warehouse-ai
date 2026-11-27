@@ -6,6 +6,8 @@ import re
 import io
 import requests
 import hashlib
+import time
+import unicodedata
 import plotly.express as px
 from pathlib import Path
 
@@ -447,31 +449,121 @@ if "data_source" not in st.session_state:
     )
 
 
+def _norm(text) -> str:
+    """Bỏ dấu + chữ thường để so khớp tên cột/từ khóa ổn định."""
+    t = unicodedata.normalize("NFD", str(text))
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+    return t.replace("đ", "d").replace("Đ", "D").lower().strip()
+
+
+def _find_sheet(sheets_dict: dict, name: str):
+    """Tìm sheet theo tên (kể cả khi khóa có tiền tố 'file · sheet')."""
+    for key, df in sheets_dict.items():
+        if _norm(key).split("·")[-1].strip() == _norm(name):
+            return df
+    return None
+
+
+def _col(df, *names):
+    """Trả về tên cột thật khớp CHÍNH XÁC (không phân biệt dấu/hoa thường)."""
+    lookup = {_norm(c): c for c in df.columns}
+    for n in names:
+        if _norm(n) in lookup:
+            return lookup[_norm(n)]
+    return None
+
+
+def _cutoff(sheets_dict: dict):
+    """Ngày chốt lấy từ sheet THIET_LAP (Ngay_mo_phong); hết ngày 23:59:59."""
+    df = _find_sheet(sheets_dict, "THIET_LAP")
+    if df is None:
+        return None
+    k, v = _col(df, "Tham_so"), _col(df, "Gia_tri")
+    if not k or not v:
+        return None
+    row = df[df[k].astype(str).str.strip() == "Ngay_mo_phong"]
+    if row.empty:
+        return None
+    val = row.iloc[0][v]
+    try:
+        if isinstance(val, (int, float)):
+            val = pd.Timestamp("1899-12-30") + pd.to_timedelta(float(val), unit="D")
+        return pd.Timestamp(val).normalize() + pd.Timedelta(hours=23, minutes=59, seconds=59)
+    except Exception:
+        return None
+
+
+def _to_md_table(df: pd.DataFrame) -> str:
+    cols = [str(c) for c in df.columns]
+    lines = ["| " + " | ".join(cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
+    for _, r in df.iterrows():
+        lines.append("| " + " | ".join(str(x) for x in r.tolist()) + " |")
+    return "\n".join(lines)
+
+
+LOCATION_RE = re.compile(r"\b[A-Z]{2,4}-[A-Z]\d{1,3}-T\d+\b")
+SKU_RE = re.compile(r"\bSP\d{3}\b", re.IGNORECASE)
+
+
 def auto_route_and_process(question: str, sheets_dict: dict):
     q_low = question.lower().strip()
+    q_up = question.upper()
+
+    # 0a. Tồn theo vị trí kệ: tính trực tiếp từ sổ BIEN_DONG (không để AI đoán)
+    loc_match = LOCATION_RE.search(q_up)
+    ledger = _find_sheet(sheets_dict, "BIEN_DONG")
+    if loc_match and ledger is not None:
+        c_pos, c_sku, c_qty = _col(ledger, "Vi_tri"), _col(ledger, "Ma_SKU"), _col(ledger, "SL_cong_tru")
+        c_lot, c_st, c_ts = _col(ledger, "Ma_lo"), _col(ledger, "Trang_thai_hang"), _col(ledger, "Thoi_diem")
+        if all([c_pos, c_sku, c_qty, c_lot, c_st]):
+            loc = loc_match.group(0)
+            led = ledger.copy()
+            cut = _cutoff(sheets_dict)
+            if c_ts and cut is not None:
+                led[c_ts] = pd.to_datetime(led[c_ts], errors="coerce")
+                led = led[led[c_ts] <= cut]
+            led = led[led[c_pos].astype(str).str.strip().str.upper() == loc]
+            led[c_qty] = pd.to_numeric(led[c_qty], errors="coerce").fillna(0)
+            g = led.groupby([c_sku, c_lot, c_st], as_index=False)[c_qty].sum()
+            g = g[g[c_qty] > 0].sort_values([c_sku, c_lot])
+            names = _find_sheet(sheets_dict, "DM_SKU")
+            if names is not None and _col(names, "Ma_SKU") and _col(names, "Ten_san_pham"):
+                mp = dict(zip(names[_col(names, "Ma_SKU")], names[_col(names, "Ten_san_pham")]))
+                g.insert(1, "Ten_san_pham", g[c_sku].map(mp))
+            g = g.rename(columns={c_qty: "So_luong"})
+            when = f" tại ngày chốt {cut:%d/%m/%Y}" if cut is not None else ""
+            if g.empty:
+                return f"⚡ **[Tính trực tiếp từ sổ BIEN_DONG]**\n\nVị trí **{loc}** hiện không có hàng{when}.", False
+            return (
+                f"⚡ **[Tính trực tiếp từ sổ BIEN_DONG]**\n\nVị trí **{loc}** có **{g[c_sku].nunique()} SKU**, "
+                f"tổng **{int(g['So_luong'].sum())}** đơn vị{when}:\n\n" + _to_md_table(g)
+            ), False
 
     # Nhóm câu hỏi bắt buộc gửi cho AI phân tích sâu hoặc vẽ biểu đồ
     if any(k in q_low for k in ["biểu đồ", "vẽ biểu đồ", "đồ thị", "vẽ đồ thị", "bảng", "lập bảng", "danh sách", "thống kê", "tại sao", "vì sao", "dự báo", "tư vấn", "lâu nhất", "tồn đọng", "nhiều nhất"]):
-        return None, True 
+        return None, True
 
-    # 1. Tra cứu tồn ít / sắp hết (0 Token)
-    if any(k in q_low for k in ["sắp hết", "tồn ít", "cảnh báo", "hết hàng", "thiếu hàng"]):
+    # 1. Hàng dưới mức tồn an toàn / sắp hết (0 Token)
+    if any(k in q_low for k in ["sắp hết", "tồn ít", "cảnh báo", "hết hàng", "thiếu hàng", "tồn an toàn", "dưới an toàn", "dưới mức"]):
         results = []
         for name, df in sheets_dict.items():
-            stock_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["ton", "số lượng", "sl", "tồn kho"])), None)
-            name_col  = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã"])), None)
-            
-            if stock_col and name_col:
-                df_clean = df.dropna(subset=[stock_col]).copy()
-                df_clean[stock_col] = pd.to_numeric(df_clean[stock_col], errors='coerce')
-                low_df = df_clean[df_clean[stock_col] <= 20]
-                
-                if not low_df.empty:
-                    items = [f"- **{row[name_col]}**: còn `{row[stock_col]}`" for _, row in low_df.head(10).iterrows()]
-                    results.append(f"📌 **Tab [{name}] có {len(low_df)} mặt hàng tồn ít (<=20):**\n" + "\n".join(items))
+            c_safe = _col(df, "Ton_an_toan", "Tồn an toàn", "Mức tồn an toàn")
+            c_stock = _col(df, "CO_THE_BAN", "Ton_kha_dung", "Tồn khả dụng", "Ton_kho", "Tồn kho", "Số lượng tồn", "So_luong_ton")
+            c_name = _col(df, "Ten_san_pham", "Tên sản phẩm", "Tên hàng", "Tên vật tư", "Mặt hàng")
+            c_code = _col(df, "Ma_SKU", "Mã SKU", "Mã hàng", "Mã")
+            if c_safe and c_stock and (c_name or c_code):
+                d = df.copy()
+                d[c_safe] = pd.to_numeric(d[c_safe], errors="coerce")
+                d[c_stock] = pd.to_numeric(d[c_stock], errors="coerce")
+                low = d[d[c_stock] < d[c_safe]]
+                show = [c for c in [c_code, c_name, c_stock, c_safe] if c]
+                results.append(
+                    f"📌 **Tab [{name}]: {len(low)} mặt hàng dưới mức tồn an toàn** "
+                    f"(so sánh `{c_stock}` với `{c_safe}`):\n\n" + (_to_md_table(low[show]) if not low.empty else "_Không có._")
+                )
         if results:
             return "⚡ **[Tự động xử lý - 0 Token]**\n\n" + "\n\n".join(results), False
-        return "⚡ **[Tự động xử lý - 0 Token]**: Tất cả mặt hàng đều an toàn (tồn kho > 20).", False
+        return None, True  # không có cột tồn an toàn → để AI đọc dữ liệu, không đoán ngưỡng
 
     # 2. Tính tổng giá trị kho (0 Token)
     elif any(k in q_low for k in ["tổng giá trị", "tổng tiền", "giá trị kho", "tổng vốn"]):
@@ -480,28 +572,29 @@ def auto_route_and_process(question: str, sheets_dict: dict):
         for name, df in sheets_dict.items():
             val_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["thành tiền", "giá trị", "tổng tiền"])), None)
             if val_col:
-                s = pd.to_numeric(df[val_col], errors='coerce').sum()
-                if s > 0:
-                    total_val += s
-                    details.append(f"- Tab **{name}**: `{s:,.0f} VNĐ`")
+                s_ = pd.to_numeric(df[val_col], errors="coerce").sum()
+                if s_ > 0:
+                    total_val += s_
+                    details.append(f"- Tab **{name}**: `{s_:,.0f} VNĐ`")
         if details:
             msg = f"⚡ **[Tự động xử lý - 0 Token]**\n\n💰 **Tổng giá trị kho:** `{total_val:,.0f} VNĐ`\n\nChi tiết từng tab:\n" + "\n".join(details)
             return msg, False
 
-    # 3. Tra cứu tồn kho tổng quát (0 Token)
+    # 3. Tồn của một mã SKU cụ thể (0 Token) — chỉ khi hỏi đúng mã, không liệt kê bừa
     elif any(k in q_low for k in ["còn chính xác bao nhiêu", "còn bao nhiêu", "số lượng còn", "số lượng trong kho"]):
-        found_rows = []
-        for name, df in sheets_dict.items():
-            stock_col = next((c for c in df.columns if any(x in str(c).lower() for x in ["ton", "số lượng", "sl", "tồn kho"])), None)
-            name_col  = next((c for c in df.columns if any(x in str(c).lower() for x in ["tên", "vật tư", "mặt hàng", "mã sp", "mã"])), None)
-            
-            if stock_col and name_col:
-                df_clean = df.dropna(subset=[stock_col, name_col]).copy()
-                for _, row in df_clean.head(15).iterrows():
-                    found_rows.append(f"- **{row[name_col]}** (Tab `{name}`): còn `{row[stock_col]}` đơn vị")
-        
-        if found_rows:
-            return "⚡ **[Tự động tra cứu kho - 0 Token]**\n\n" + "\n".join(found_rows), False
+        sku = SKU_RE.search(question)
+        if sku:
+            code = sku.group(0).upper()
+            for name, df in sheets_dict.items():
+                c_code, c_sell = _col(df, "Ma_SKU"), _col(df, "SELLABLE")
+                if c_code and c_sell and _col(df, "CO_THE_BAN"):
+                    row = df[df[c_code].astype(str).str.upper() == code]
+                    if not row.empty:
+                        r = row.iloc[0]
+                        return (
+                            f"⚡ **[Tự động tra cứu - 0 Token]**\n\n**{code}** còn **{r[c_sell]}** đơn vị bán được (SELLABLE, chưa trừ giữ hàng); "
+                            f"có thể bán sau khi trừ giữ hàng: **{r[_col(df, 'CO_THE_BAN')]}** (tab `{name}`)."
+                        ), False
 
     return None, True
 
@@ -511,6 +604,19 @@ def auto_route_and_process(question: str, sheets_dict: dict):
 def extract_gsheet_id(url: str) -> str:
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else None
+
+def normalize_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Cột ngày bị lưu dạng số serial Excel (vd 46285.375, định dạng General) → datetime thật."""
+    keys = ("han_su_dung", "hsd", "han_dung", "expiry", "ngay", "thoi_gian", "thoi_diem", "bat_dau", "ket_thuc", "luc")
+    for c in df.columns:
+        if not any(k in _norm(c) for k in keys):
+            continue
+        if pd.api.types.is_numeric_dtype(df[c]):
+            vals = df[c].dropna()
+            if len(vals) and vals.between(30000, 80000).all():
+                df[c] = pd.Timestamp("1899-12-30") + pd.to_timedelta(df[c], unit="D")
+    return df
+
 
 def smart_parse_sheet(xl: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     """Tự động tìm dòng tiêu đề thật sự (bỏ qua các dòng mô tả ở đầu sheet) và làm sạch bảng."""
@@ -536,7 +642,7 @@ def smart_parse_sheet(xl: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     df = xl.parse(sheet_name, header=best_row)
     df = df.dropna(how="all")
     df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")]
-    return df.reset_index(drop=True)
+    return normalize_date_columns(df.reset_index(drop=True))
 
 
 @st.cache_data(show_spinner=False, ttl=60)
@@ -575,7 +681,7 @@ def load_all_sheets_from_multiple_gsheets(urls: list) -> tuple:
 
 
 @st.cache_data(show_spinner=False)
-def load_all_sheets_from_file(path: str) -> dict:
+def load_all_sheets_from_file(path: str, mtime: float = 0) -> dict:
     xl = pd.ExcelFile(path)
     return {sheet: smart_parse_sheet(xl, sheet) for sheet in xl.sheet_names}
 
@@ -601,7 +707,61 @@ def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
     return combined, errors
 
 
-def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
+ENTITY_PATTERNS = {
+    "Mã SKU": re.compile(r"\bSP\d{3}\b"),
+    "Mã lô": re.compile(r"\bL\d{3}-\d{2}\b"),
+    "Vị trí": re.compile(r"\b[A-Z]{2,4}-[A-Z]\d{1,3}-T\d+\b"),
+}
+FOLLOWUP_MARKERS = [
+    "trên", "đó", "này", "kia", "vừa rồi", "vừa nêu", "vừa hỏi", "ở trên", "nói trên", "như trên",
+    "những cái", "các mặt hàng đó", "chúng", "nó ", "thế còn", "còn lại", "ngoài ra", "tiếp theo",
+    "so với", "trong số", "trong đó", "cũng vậy", "tương tự", "câu trước", "lúc nãy", "ban nãy",
+]
+
+
+def is_followup_question(question: str) -> bool:
+    """Câu hỏi nối tiếp (cần lịch sử) hay câu hỏi độc lập (không cần)."""
+    q = question.lower().strip()
+    if any(m in q for m in FOLLOWUP_MARKERS):
+        return True
+    # Câu quá ngắn và không chứa mã cụ thể thường là hỏi tiếp ("còn kho đông?")
+    has_code = any(p.search(question.upper()) for p in ENTITY_PATTERNS.values())
+    return len(q.split()) <= 4 and not has_code
+
+
+def extract_entities(answer: str) -> dict:
+    """Lấy mã SKU / lô / vị trí xuất hiện trong câu trả lời, giữ thứ tự, không trùng."""
+    found = {}
+    for label, pat in ENTITY_PATTERNS.items():
+        items = list(dict.fromkeys(pat.findall(answer.upper())))
+        if items:
+            found[label] = items
+    return found
+
+
+def build_history_context(question: str, chat_history, last_entities) -> str:
+    """Chỉ đưa lịch sử khi là câu hỏi nối tiếp; câu hỏi độc lập luôn cho cùng một ngữ cảnh."""
+    if not is_followup_question(question):
+        return ""
+    msgs = [m for m in (chat_history or []) if str(m.get("content", "")).strip() and not str(m.get("content", "")).startswith("❌")]
+    users = [m for m in msgs if m.get("role") == "user"][-15:]          # 15 câu hỏi gần nhất
+    answers = [m for m in msgs if m.get("role") != "user"][-2:]         # 2 câu trả lời gần nhất, rút gọn
+    keep = {id(m) for m in users + answers}
+    lines = []
+    for m in msgs:
+        if id(m) not in keep:
+            continue
+        if m.get("role") == "user":
+            lines.append(f"Người dùng: {str(m['content']).strip()[:500]}")
+        else:
+            lines.append(f"Trợ lý: {str(m['content']).strip()[:700]}")
+    if last_entities:
+        ent = "; ".join(f"{k}: {', '.join(v)}" for k, v in last_entities.items())
+        lines.append(f"[Các mã xuất hiện trong câu trả lời GẦN NHẤT — 'các sản phẩm trên' nghĩa là đúng các mã này] {ent}")
+    return "\n".join(lines)
+
+
+def ask_ai(question: str, sheets_dict: dict, chat_history=None, last_entities=None) -> str:
     api_key = get_gemini_api_key()
     if not api_key:
         raise Exception(
@@ -621,25 +781,24 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
                 note = f"Đầy đủ {total_rows} dòng"
             else:
                 df_send = df_clean.head(100)
-                note = f"Hiển thị 100/{total_rows} dòng đầu"
+                note = (f"CHỈ 100/{total_rows} dòng đầu — KHÔNG đủ để cộng tổng hay lọc; "
+                        f"hãy ưu tiên các tab tổng hợp/snapshot, nếu buộc phải dùng tab này thì nói rõ dữ liệu bị cắt")
+            df_send = df_send.copy()
+            for _c in df_send.columns:
+                if pd.api.types.is_datetime64_any_dtype(df_send[_c]):
+                    df_send[_c] = df_send[_c].dt.strftime("%d/%m/%Y %H:%M").str.replace(" 00:00", "", regex=False)
             prompt_data.append(f"=== TAB [{name}] ({note}) ===\n" + df_send.to_string(index=False))
             
     context = "\n\n".join(prompt_data)
 
     # Đưa các lượt hội thoại gần nhất vào prompt để câu hỏi nối tiếp có ngữ cảnh.
-    history_lines = []
-    for item in (chat_history or [])[-16:]:
-        role = "Người dùng" if item.get("role") == "user" else "Trợ lý"
-        text_value = str(item.get("content", "")).strip()
-        if text_value:
-            history_lines.append(f"{role}: {text_value[:3500]}")
-    history_context = "\n".join(history_lines)
+    history_context = build_history_context(question, chat_history, last_entities)
 
     system_text = (
         "Bạn là chuyên gia phân tích dữ liệu kho hàng. Dữ liệu bên dưới chỉ là dữ liệu hiện tại; "
         "lịch sử hội thoại được cung cấp để hiểu câu hỏi nối tiếp.\n\n"
         + context + "\n\n"
-        "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Chưa có lịch sử)") + "\n\n"
+        "LỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + (history_context or "(Không có — đây là câu hỏi độc lập, chỉ dùng dữ liệu bên trên)") + "\n\n"
         "QUY TẮC BẮT BUỘC KHI TRẢ LỜI:\n"
         "0. Với câu hỏi nối tiếp như 'các sản phẩm trên', chỉ xét đúng các sản phẩm trong câu trả lời trước liên quan; không mở rộng sang toàn bộ kho. Nếu thiếu dữ liệu, nói rõ, không đoán.\n"
         "1. QUY TẮC TRA CỨU SỐ LIỆU: Tự động xác định đúng bảng tổng hợp/tồn kho/danh mục phù hợp nhất trong dữ liệu được cung cấp (ví dụ các tab tồn kho theo mã hàng, danh mục sản phẩm...). Đọc đúng tên cột thực tế của file, đối chiếu chính xác từng hàng theo đúng mã/tên sản phẩm, tuyệt đối không lấy nhầm số liệu của dòng khác hoặc tự suy diễn.\n"
@@ -653,7 +812,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     body = {
         "contents": [{"role": "user", "parts": [{"text": system_text + "\n\nCÂU HỎI CỦA NGƯỜI DÙNG: " + question}]}],
         "generationConfig": {
-            "maxOutputTokens": 8192,
+            "maxOutputTokens": 16384,
             "temperature": 0.0
         }
     }
@@ -674,7 +833,8 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
             for m in m_list:
                 m_name = m.get("name", "").replace("models/", "")
                 methods = m.get("supportedGenerationMethods", [])
-                if "generateContent" in methods and m_name.startswith("gemini-") and "lite" not in m_name.lower():
+                # Chỉ nhận model văn bản chuẩn; loại preview/computer-use/tts/image/exp...
+                if "generateContent" in methods and re.fullmatch(r"gemini-\d+(\.\d+)?-(flash|pro)(-latest)?", m_name):
                     discovered_models.append(m_name)
     except Exception:
         pass
@@ -682,51 +842,118 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
     candidate_models = list(dict.fromkeys(preferred_models + discovered_models))
 
     last_error = ""
+    quota_error = ""
     for model_name in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-        try:
-            resp = requests.post(url, params={"key": api_key}, json=body, timeout=60)
+        for attempt in range(2):  # thử lại 1 lần với lỗi tạm thời 5xx
+            try:
+                resp = requests.post(url, params={"key": api_key}, json=body, timeout=60)
+            except Exception as e:
+                last_error = f"[{model_name}]: {str(e)}"
+                break
             if resp.status_code == 200:
                 res_json = resp.json()
                 candidates = res_json.get("candidates", [])
                 if candidates and "content" in candidates[0]:
                     parts = candidates[0]["content"].get("parts", [])
-                    text_parts = [p.get("text", "") for p in parts if "text" in p]
-                    full_text = "".join(text_parts).strip()
+                    full_text = "".join(p.get("text", "") for p in parts if "text" in p).strip()
                     if full_text:
+                        if candidates[0].get("finishReason") == "MAX_TOKENS":
+                            full_text += "\n\n⚠️ _Câu trả lời bị cắt do giới hạn độ dài. Hãy hỏi hẹp hơn (theo nhóm hàng / theo kho) để xem đủ._"
                         return f"🤖 **[Phân tích bởi AI ({model_name})]**\n\n{full_text}"
-            else:
-                res_err = resp.json().get("error", {})
-                err_msg = res_err.get("message", resp.text)
-                if "invalid authentication credentials" in err_msg.lower() or "api key not valid" in err_msg.lower():
-                    raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng kiểm tra lại API Key.")
-                last_error = f"[{model_name}]: {err_msg}"
-        except Exception as e:
-            if "API Key" in str(e):
-                raise e
-            last_error = f"[{model_name}]: {str(e)}"
+                last_error = f"[{model_name}]: phản hồi rỗng"
+                break
+            try:
+                err_msg = resp.json().get("error", {}).get("message", resp.text)
+            except Exception:
+                err_msg = resp.text
+            if "api key not valid" in err_msg.lower() or "invalid authentication credentials" in err_msg.lower():
+                raise Exception("🔑 **API Key không hợp lệ hoặc đã hết hạn!**\nVui lòng kiểm tra lại API Key.")
+            if resp.status_code == 429 or "quota" in err_msg.lower():
+                if not quota_error:
+                    m = re.search(r"retry in ([0-9hms\.]+)", err_msg)
+                    quota_error = m.group(1).rstrip(".") if m else "một lúc"
+                last_error = f"[{model_name}]: hết hạn mức"
+                break  # model này hết hạn mức → thử model khác
+            last_error = f"[{model_name}]: {err_msg}"
+            if resp.status_code >= 500 and attempt == 0:
+                time.sleep(2)
+                continue
+            break
 
+    if quota_error:
+        raise Exception(
+            "⏳ **Đã hết hạn mức gọi Gemini API (gói miễn phí).** Hãy thử lại sau khoảng "
+            f"**{quota_error}**, hoặc bật thanh toán/đổi API key. Các câu hỏi tra cứu trực tiếp (tồn an toàn, tồn theo vị trí, tổng giá trị) vẫn chạy không cần AI."
+        )
     raise Exception(f"Lỗi kết nối AI. Chi tiết: {last_error}")
 
-# HÀM HIỂN THỊ: ẨN HOÀN TOÀN CODE PYTHON VÀ CHỈ VẼ BIỂU ĐỒ
+def _clean_cell(x: str) -> str:
+    return re.sub(r"[*`]|<br\s*/?>", lambda m: "\n" if m.group(0).startswith("<") else "", x).strip()
+
+
+def _render_text_with_tables(text: str):
+    """Bảng markdown → st.dataframe (hiện đủ mọi dòng, cuộn khi quá dài); phần còn lại → st.markdown."""
+    lines = text.split("\n")
+    buf, i = [], 0
+
+    def flush():
+        if buf and "".join(buf).strip():
+            st.markdown("\n".join(buf))
+        buf.clear()
+
+    sep_re = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
+    while i < len(lines):
+        if lines[i].strip().startswith("|") and i + 1 < len(lines) and sep_re.match(lines[i + 1]):
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                j += 1
+            try:
+                split = lambda ln: [_clean_cell(c) for c in ln.strip().strip("|").split("|")]
+                header = split(lines[i])
+                rows = []
+                for ln in lines[i + 2:j]:
+                    cells = split(ln)
+                    cells = (cells + [""] * len(header))[:len(header)]
+                    rows.append(cells)
+                df = pd.DataFrame(rows, columns=header)
+                flush()
+                height = min(38 + 35 * (len(df) + 1), 900)
+                st.dataframe(df, use_container_width=True, hide_index=True, height=height)
+            except Exception:
+                buf.extend(lines[i:j])
+            i = j
+        else:
+            buf.append(lines[i])
+            i += 1
+    flush()
+
+
+# HÀM HIỂN THỊ: chỉ ẩn khối code vẽ biểu đồ; giữ nguyên mọi khối khác (bảng, mã...)
 def render_message_and_chart(content: str, sheets_dict: dict):
     code_pattern = r"```(?:python|py)?\s*(.*?)\s*```"
-    code_matches = re.findall(code_pattern, content, re.DOTALL)
-    clean_text = re.sub(code_pattern, "", content, flags=re.DOTALL).strip()
-    
+    plot_blocks = []
+
+    def _keep_or_extract(m):
+        block = m.group(1)
+        if any(kw in block for kw in ["plotly", "px.", "fig"]):
+            plot_blocks.append(block)
+            return ""
+        return m.group(0)  # không phải code biểu đồ → giữ lại, không xóa mất nội dung
+
+    clean_text = re.sub(code_pattern, _keep_or_extract, content, flags=re.DOTALL).strip()
+
     if clean_text:
-        st.markdown(clean_text)
-        
-    if code_matches:
-        for code_block in code_matches:
-            if any(kw in code_block for kw in ["plotly", "px", "fig"]):
-                try:
-                    local_vars = {"sheets_dict": sheets_dict, "pd": pd, "px": px}
-                    exec(code_block, globals(), local_vars)
-                    if "fig" in local_vars:
-                        st.plotly_chart(local_vars["fig"], use_container_width=True)
-                except Exception:
-                    pass
+        _render_text_with_tables(clean_text)
+
+    for code_block in plot_blocks:
+        try:
+            local_vars = {"sheets_dict": sheets_dict, "pd": pd, "px": px}
+            exec(code_block, globals(), local_vars)
+            if "fig" in local_vars:
+                st.plotly_chart(local_vars["fig"], use_container_width=True)
+        except Exception as exc:
+            st.caption(f"⚠️ Không vẽ được biểu đồ: {exc}")
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHẦN 3 — GIAO DIỆN CHÍNH & SIDEBAR QUẢN TRỊ
@@ -923,7 +1150,7 @@ with st.sidebar:
             except Exception as exc:
                 st.error(f"❌ Không đọc được file Excel: {exc}")
         elif EXCEL_PATH.exists():
-            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH))
+            sheets_data = load_all_sheets_from_file(str(EXCEL_PATH), os.path.getmtime(EXCEL_PATH))
             st.info(f"ℹ️ Đang sử dụng file Excel đã lưu sẵn ({len(sheets_data)} sheet). Tải file lên để thay dữ liệu đang dùng.")
 
     st.divider()
@@ -1445,7 +1672,10 @@ with tab_chat:
                 final_ans = local_answer
             else:
                 try:
-                    final_ans = ask_ai(question, sheets_data, st.session_state.messages[:-1])
+                    _prev = st.session_state.messages[:-1]
+                    _last_ans = next((m["content"] for m in reversed(_prev)
+                                      if m.get("role") != "user" and not str(m.get("content", "")).startswith("❌")), "")
+                    final_ans = ask_ai(question, sheets_data, _prev, extract_entities(_last_ans))
                 except Exception as e:
                     final_ans = f"❌ {str(e)}"
 
