@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
 import os
 import re
@@ -570,9 +571,43 @@ def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
     return combined, errors
 
 
+class _SmartSheetsDict(dict):
+    """Cho phép truy cập sheets_dict bằng cả tên đầy đủ ('file.xlsx · BIEN_DONG') lẫn tên ngắn ('BIEN_DONG')."""
+    def _resolve_key(self, key):
+        if super().__contains__(key):
+            return key
+        key_str = str(key).strip()
+        key_low = key_str.lower()
+        for k in super().keys():
+            k_str = str(k)
+            if k_str == key_str or k_str.endswith(f" · {key_str}"):
+                return k
+        for k in super().keys():
+            k_low = str(k).lower()
+            if k_low == key_low or k_low.endswith(f" · {key_low}"):
+                return k
+        return None
+
+    def __contains__(self, key):
+        return self._resolve_key(key) is not None
+
+    def __getitem__(self, key):
+        resolved = self._resolve_key(key)
+        if resolved is not None:
+            return super().__getitem__(resolved)
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        resolved = self._resolve_key(key)
+        if resolved is not None:
+            return super().__getitem__(resolved)
+        return default
+
+
 def _run_python_calc(code_str: str, sheets_dict: dict) -> str:
     """Thực thi mã pandas tính toán số liệu kho trên sheets_dict một cách an toàn và trả về stdout."""
     import datetime, math
+    smart_sheets = _SmartSheetsDict({k: v.copy() for k, v in sheets_dict.items()})
     safe_globals = {
         "__builtins__": {
             "len": len, "range": range, "enumerate": enumerate, "zip": zip,
@@ -585,7 +620,7 @@ def _run_python_calc(code_str: str, sheets_dict: dict) -> str:
         "np": np,
         "datetime": datetime,
         "math": math,
-        "sheets_dict": {k: v.copy() for k, v in sheets_dict.items()},
+        "sheets_dict": smart_sheets,
     }
     buf = io.StringIO()
     try:
@@ -599,15 +634,16 @@ def _run_python_calc(code_str: str, sheets_dict: dict) -> str:
 
 def _build_compact_schema_context(sheets_dict: dict) -> str:
     """
-    Tạo ngữ cảnh siêu gọn (~8.000-12.000 tokens thay vì ~140.000 tokens) để không bao giờ vượt TPM Free Tier:
-    - Bỏ qua tab đáp án mẫu TEST_30.
+    Tạo ngữ cảnh siêu gọn (~8.000-12.000 tokens thay vì ~140.000 tokens) để không vượt TPM Free Tier:
+    - Bỏ qua tab đáp án mẫu TEST_30 (kể cả khi có tiền tố tên file).
     - Các bảng danh mục/cấu hình/quy tắc nhỏ (<= 60 dòng): gửi đầy đủ 100% dòng.
     - Các bảng giao dịch/sổ cái lớn (> 60 dòng như BIEN_DONG, XUAT_GIAO, DM_LO...): gửi danh sách cột + 3 dòng mẫu;
       toàn bộ 100% dòng vẫn nằm sẵn trong `sheets_dict` để Python pandas truy vấn chính xác tuyệt đối.
     """
     prompt_data = []
     for name, df in sheets_dict.items():
-        if str(name).strip().upper() == "TEST_30":
+        short_name = str(name).split(" · ")[-1].strip().upper()
+        if short_name == "TEST_30":
             continue
         df_clean = df.dropna(how="all")
         if df_clean.empty:
@@ -666,11 +702,12 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         "5. NẾU NGƯỜI DÙNG YÊU CẦU VẼ BIỂU ĐỒ: Viết mã Python vẽ biểu đồ bằng `plotly.express` (gán kết quả vào biến `fig`) trong khối ```python ... ```."
     )
 
-    # Chỉ dùng các model văn bản chuẩn có hỗ trợ Free Tier (loại bỏ computer-use, robotics, tts, image, pro limit=0)
+    # Danh sách model văn bản hiện hành của Google Gemini (loại bỏ các model đã ngừng hỗ trợ 2.0-flash / 2.5-flash-lite)
     candidate_models = [
         "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
     ]
 
     def _call_gemini(model_name: str, contents_payload: list) -> str:
@@ -712,6 +749,7 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         return ""
 
     model_errors = []
+    has_quota_error = False
     for model_name in candidate_models:
         try:
             contents = [{
@@ -748,15 +786,22 @@ def ask_ai(question: str, sheets_dict: dict, chat_history=None) -> str:
         except Exception as e:
             if "API Key" in str(e):
                 raise e
-            short_err = str(e).splitlines()[0][:260]
+            err_str = str(e)
+            if "quota" in err_str.lower() or "rate limit" in err_str.lower() or "429" in err_str:
+                has_quota_error = True
+            short_err = err_str.splitlines()[0][:260]
             model_errors.append(f"- **{model_name}**: {short_err}")
 
     details = "\n".join(model_errors) if model_errors else "Không nhận được phản hồi từ các model."
+    if has_quota_error:
+        raise Exception(
+            "⚠️ **Đã vượt giới hạn gọi API miễn phí (Quota/Rate Limit) của Google Gemini.**\n\n"
+            "Chi tiết từng model:\n" + details + "\n\n"
+            "💡 *Gợi ý: Đợi khoảng 30–60 giây rồi thử lại, hoặc đổi sang Gemini API Key khác trong Streamlit Secrets.*"
+        )
     raise Exception(
-        "⚠️ **Đã vượt giới hạn gọi API miễn phí (Quota/Rate Limit) của Google Gemini.**\n\n"
-        "Chi tiết từng model:\n" + details + "\n\n"
-        "💡 *Gợi ý: Nếu vừa hỏi liên tục nhiều câu, hãy đợi khoảng 30–60 giây rồi gửi lại; "
-        "nếu đã hết lượt miễn phí trong ngày của API Key hiện tại, hãy đổi sang một Gemini API Key khác trong Streamlit Secrets.*"
+        "⚠️ **Không thể hoàn tất phân tích từ AI.**\n\n"
+        "Chi tiết kỹ thuật:\n" + details
     )
 
 
