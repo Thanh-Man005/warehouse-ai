@@ -512,7 +512,9 @@ def auto_route_and_process(question: str, sheets_dict: dict):
     # 0a. Tồn theo vị trí kệ: tính trực tiếp từ sổ BIEN_DONG (không để AI đoán)
     loc_match = LOCATION_RE.search(q_up)
     ledger = _find_sheet(sheets_dict, "BIEN_DONG")
-    if loc_match and ledger is not None:
+    asks_contents = any(k in q_low for k in ["sku", "lượng hàng", "chứa", "đang có", "hàng nào", "tồn", "có gì", "bao nhiêu"])
+    asks_movement = any(k in q_low for k in ["chuyển", "lúc nào", "khi nào", "điều chuyển", "từ kệ", "sang"])
+    if loc_match and ledger is not None and asks_contents and not asks_movement and len(set(LOCATION_RE.findall(q_up))) == 1:
         c_pos, c_sku, c_qty = _col(ledger, "Vi_tri"), _col(ledger, "Ma_SKU"), _col(ledger, "SL_cong_tru")
         c_lot, c_st, c_ts = _col(ledger, "Ma_lo"), _col(ledger, "Trang_thai_hang"), _col(ledger, "Thoi_diem")
         if all([c_pos, c_sku, c_qty, c_lot, c_st]):
@@ -712,6 +714,9 @@ def load_all_sheets_from_uploaded_files(uploaded_files) -> tuple:
 DEFAULT_CORE_TABS = {"dm_sku", "ton_sku", "ton_lo", "ton_vi_tri", "thiet_lap", "quy_tac", "dm_khu", "tong_quan"}
 # Gợi ý: từ khóa trong câu hỏi (không dấu) → các tab nên gửi thêm.
 DEFAULT_TAB_HINTS = [
+    (("so0", "dap ung don", "du hang cho don"), ("don_ban", "dong_don_ban", "giu_hang", "nhiem_vu_pick", "xuat_giao", "trang_thai_don")),
+    (("po0", "phieu nhap", "duyet"), ("don_mua_po", "phieu_nhap", "lich_xe_nhap", "putaway", "dm_nhan_vien")),
+    (("khu vuc", "day nao", "tang nao", "nam o dau", "vi tri", "ke "), ("dm_vi_tri", "putaway")),
     (("xe ", "xe nhap", "eta", "ata", "cua nhap", "tai xe", "bien so"), ("lich_xe_nhap", "don_mua_po", "phieu_nhap")),
     (("nhap", "nhan hang", " po", "mua hang", "nha cung cap", "ncc", "dat hang", "tre hang"), ("don_mua_po", "phieu_nhap", "lich_xe_nhap", "dm_doi_tac")),
     (("putaway", "len ke", "cat hang"), ("putaway", "phieu_nhap")),
@@ -1326,7 +1331,7 @@ with st.sidebar:
             if not _configured:
                 st.caption("Chưa có tab lõi nào khớp file này → đang TỰ NHẬN DIỆN (tab ≤150 dòng hoặc tên có \"tổng hợp / tồn / danh mục...\"). "
                            "Chọn tab lõi bên dưới rồi bấm Lưu để cố định.")
-            _core_default = sorted(effective_core_keys(sheets_dict, _cfg), key=_keys.index)
+            _core_default = sorted(effective_core_keys(sheets_data, _cfg), key=_keys.index)
             _excl_wanted = {_tabkey(t) for t in _cfg.get("exclude_tabs", [])}
             _excl_default = [k for k in _keys if _sheet_base(k) in _excl_wanted]
             _core_sel = st.multiselect("Tab lõi (luôn gửi cho AI)", _keys, default=_core_default, key=f"tabcfg_core_{_sig}")
