@@ -1511,4 +1511,3 @@ with tab_chat:
             st.session_state.messages.append({"role": "assistant", "content": final_ans})
             save_chat_history()
         st.rerun()
-Optimizing database token efficiency and model selection
